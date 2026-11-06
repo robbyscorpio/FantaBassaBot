@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # --- 1. SERVER HTTP PER RENDER ---
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -118,11 +118,11 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 **GUIDA E REGOLAMENTO ASTE (Stile eBay)**\n\n"
         f"{info_mercato}"
         "🟢 **Avviare un'asta (il tuo messaggio verrà eliminato automaticamente):**\n"
-        "`.new NomeGiocatore QuotaMassima`\n"
-        "_(Es: `.new totti 10` - L'asta parte pubblicamente a 1 credito e il bot difenderà la tua quota fino a 10)_\n\n"
+        "`/asta NomeGiocatore QuotaMassima` (o `/a`)\n"
+        "_(Es: `/asta totti 10` - L'asta parte a 1 e il bot difende la tua quota fino a 10)_\n\n"
         "⚡ **Rilanciare (il tuo messaggio verrà eliminato automaticamente):**\n"
-        "`.ril NomeGiocatore NuovaOfferta`\n"
-        "_(Es: `.ril totti 12`)_\n\n"
+        "`/rilancio NomeGiocatore NuovaOfferta` (o `/ril`)\n"
+        "_(Es: `/rilancio totti 12`)_\n\n"
         "📊 **Stato Aste:**\n"
         "`/stato` - Mostra le aste attive ed il tempo rimanente."
     )
@@ -135,26 +135,22 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # Estrae gli argomenti dal testo del messaggio (es. ".new totti 10" -> ["totti", "10"])
-    testo = update.message.text.strip()
-    parti = testo.split()[1:]  # Salta il comando .new
-
-    if len(parti) < 2:
+    if not context.args or len(context.args) < 2:
         await update.message.reply_text(
             "⚠️ **Formato errato!**\n"
             "Devi inserire il nome del giocatore seguito dalla quota massima.\n"
-            "Esempio: `.new totti 10`",
+            "Esempio: `/asta totti 10`",
             parse_mode="Markdown"
         )
         return
 
     try:
-        quota_massima = int(parti[-1])
-        nome_giocatore = " ".join(parti[:-1]).replace('"', '').strip()
+        quota_massima = int(context.args[-1])
+        nome_giocatore = " ".join(context.args[:-1]).replace('"', '').strip()
     except ValueError:
         await update.message.reply_text(
             "⚠️ **La quota deve essere un numero!**\n"
-            "Esempio corretto: `.new totti 10`",
+            "Esempio corretto: `/asta totti 10`",
             parse_mode="Markdown"
         )
         return
@@ -167,7 +163,7 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if giocatore_key in aste:
         await update.message.reply_text(
-            f"⚠️ C'è già un'asta in corso per **{nome_giocatore}**! Usa `.ril {nome_giocatore} [offerta]` per rilanciare.",
+            f"⚠️ C'è già un'asta in corso per **{nome_giocatore}**! Usa `/rilancio {nome_giocatore} [offerta]` per rilanciare.",
             parse_mode="Markdown"
         )
         return
@@ -211,16 +207,13 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    testo = update.message.text.strip()
-    parti = testo.split()[1:]  # Salta il comando .ril
-
-    if len(parti) < 2:
-        await update.message.reply_text("⚠️ Formato errato. Usa: `.ril NomeGiocatore NuovaOfferta` (es: `.ril totti 12`)", parse_mode="Markdown")
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("⚠️ Formato errato. Usa: `/rilancio NomeGiocatore NuovaOfferta` (es: `/rilancio totti 12`)", parse_mode="Markdown")
         return
 
     try:
-        nuova_offerta = int(parti[-1])
-        nome_giocatore = " ".join(parti[:-1]).replace('"', '').strip()
+        nuova_offerta = int(context.args[-1])
+        nome_giocatore = " ".join(context.args[:-1]).replace('"', '').strip()
     except ValueError:
         await update.message.reply_text("⚠️ L'ultimo parametro deve essere un numero intero!", parse_mode="Markdown")
         return
@@ -309,11 +302,12 @@ def main():
     app.add_handler(CommandHandler(["start"], start))
     app.add_handler(CommandHandler(["guida", "help"], guida))
     app.add_handler(CommandHandler(["setmercato"], set_mercato))
+    
+    # Comandi ufficiali con lo slash (con abbreviazioni incluse)
+    app.add_handler(CommandHandler(["asta", "a"], nuova_asta))
+    app.add_handler(CommandHandler(["rilancio", "ril"], rilancio))
+    
     app.add_handler(CommandHandler(["stato"], stato_aste))
-
-    # Handler personalizzati per intercettare i comandi che iniziano con il punto (.)
-    app.add_handler(MessageHandler(filters.Regex(r'^\.new(\s|$)'), nuova_asta))
-    app.add_handler(MessageHandler(filters.Regex(r'^\.ril(\s|$)'), rilancio))
 
     print("Bot Fantacalcio Asta in esecuzione...")
     app.run_polling()
