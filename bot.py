@@ -163,3 +163,25 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+# Un server HTTP minimale per soddisfare il controllo delle porte di Render
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    server.serve_forever()
+
+# Avvia il server in un thread separato così non blocca il bot Telegram
+server_thread = threading.Thread(target=run_server, daemon=True)
+server_thread.start()
+
+# --- Qui sotto inserisci il codice principale del tuo bot Telegram (polling) ---
