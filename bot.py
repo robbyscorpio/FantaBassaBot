@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- 1. SERVER HTTP PER RENDER ---
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -129,14 +129,17 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(testo_guida, parse_mode="Markdown")
 
 async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Cancella il messaggio dell'utente per mantenere la quota segreta
     if update.effective_chat.type != "private":
         try:
             await update.message.delete()
         except Exception:
             pass
 
-    if not context.args or len(context.args) < 2:
+    # Estrae gli argomenti dal testo del messaggio (es. ".new totti 10" -> ["totti", "10"])
+    testo = update.message.text.strip()
+    parti = testo.split()[1:]  # Salta il comando .new
+
+    if len(parti) < 2:
         await update.message.reply_text(
             "⚠️ **Formato errato!**\n"
             "Devi inserire il nome del giocatore seguito dalla quota massima.\n"
@@ -146,8 +149,8 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        quota_massima = int(context.args[-1])
-        nome_giocatore = " ".join(context.args[:-1]).replace('"', '').strip()
+        quota_massima = int(parti[-1])
+        nome_giocatore = " ".join(parti[:-1]).replace('"', '').strip()
     except ValueError:
         await update.message.reply_text(
             "⚠️ **La quota deve essere un numero!**\n"
@@ -202,20 +205,22 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Cancella il messaggio di rilancio dell'utente
     if update.effective_chat.type != "private":
         try:
             await update.message.delete()
         except Exception:
             pass
 
-    if not context.args or len(context.args) < 2:
+    testo = update.message.text.strip()
+    parti = testo.split()[1:]  # Salta il comando .ril
+
+    if len(parti) < 2:
         await update.message.reply_text("⚠️ Formato errato. Usa: `.ril NomeGiocatore NuovaOfferta` (es: `.ril totti 12`)", parse_mode="Markdown")
         return
 
     try:
-        nuova_offerta = int(context.args[-1])
-        nome_giocatore = " ".join(context.args[:-1]).replace('"', '').strip()
+        nuova_offerta = int(parti[-1])
+        nome_giocatore = " ".join(parti[:-1]).replace('"', '').strip()
     except ValueError:
         await update.message.reply_text("⚠️ L'ultimo parametro deve essere un numero intero!", parse_mode="Markdown")
         return
@@ -304,9 +309,11 @@ def main():
     app.add_handler(CommandHandler(["start"], start))
     app.add_handler(CommandHandler(["guida", "help"], guida))
     app.add_handler(CommandHandler(["setmercato"], set_mercato))
-    app.add_handler(CommandHandler(["new"], nuova_asta))
-    app.add_handler(CommandHandler(["ril"], rilancio))
     app.add_handler(CommandHandler(["stato"], stato_aste))
+
+    # Handler personalizzati per intercettare i comandi che iniziano con il punto (.)
+    app.add_handler(MessageHandler(filters.Regex(r'^\.new(\s|$)'), nuova_asta))
+    app.add_handler(MessageHandler(filters.Regex(r'^\.ril(\s|$)'), rilancio))
 
     print("Bot Fantacalcio Asta in esecuzione...")
     app.run_polling()
