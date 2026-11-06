@@ -22,8 +22,11 @@ server_thread = threading.Thread(target=run_server, daemon=True)
 server_thread.start()
 
 # --- 2. STATO MEMORIA E ASTE ---
-aste = {}  # { "nomegiocatore": { ... } }
+aste = {}                # { "giocatore_key": { ... } }
+giocatori_tagliati = {}  # { "giocatore_key": { "utente": "NomeUtente", "prezzo": 15 } }
+
 TIMER_ASTA_ORE = 24
+MAX_ASTE_CONTEMPORANEE = 2
 
 data_inizio_mercato = None
 data_fine_mercato = None
@@ -75,7 +78,7 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Benvenuto nel Bot Aste Fantacalcio!\n"
-        "Usa `/guida` per consultare le istruzioni e le date del mercato.",
+        "Usa `/guida` per consultare le istruzioni e le regole del mercato.",
         parse_mode="Markdown"
     )
 
@@ -109,6 +112,54 @@ async def set_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("⚠️ Data o ora non valide. Usa il formato `GG/MM/AAAA HH:MM`.", parse_mode="Markdown")
 
+async def taglia_giocatore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await verifica_admin(update, context):
+        return
+
+    if update.effective_chat.type != "private":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+
+    if not context.args or len(context.args) < 3:
+        await update.message.reply_text(
+            "⚠️ **Formato errato!** Usa:\n"
+            "`/taglia NomeGiocatore Prezzo Utente`\n"
+            "Esempio: `/taglia immobile 15 @mario`",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        utente_taglio = context.args[-1]
+        prezzo_taglio = int(context.args[-2])
+        nome_giocatore = " ".join(context.args[:-2]).replace('"', '').strip()
+    except ValueError:
+        await update.message.reply_text(
+            "⚠️ **Formato errato!** Il prezzo del taglio deve essere un numero intero.\n"
+            "Usa: `/taglia NomeGiocatore Prezzo Utente`",
+            parse_mode="Markdown"
+        )
+        return
+
+    giocatore_key = nome_giocatore.lower()
+
+    giocatori_tagliati[giocatore_key] = {
+        "utente": utente_taglio,
+        "prezzo": prezzo_taglio
+    }
+
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"✂️ **TAGLIO REGISTRATO!**\n\n"
+             f"⚽ **Giocatore:** {nome_giocatore}\n"
+             f"👤 **Tagliato da:** {utente_taglio}\n"
+             f"💰 **Costo del taglio:** {prezzo_taglio} crediti\n"
+             f"*(Se vorrà riprenderlo, dovrà offrire almeno questa cifra).*`",
+            parse_mode="Markdown"
+    )
+
 async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     info_mercato = "📅 **PERIODO MERCATO:** Attivo\n\n"
     if data_inizio_mercato and data_fine_mercato:
@@ -119,14 +170,16 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     testo_guida = (
-        "📖 **GUIDA E REGOLAMENTO ASTE (Stile eBay)**\n\n"
+        "📖 **GUIDA E REGOLAMENTO ASTE**\n\n"
         f"{info_mercato}"
-        "🟢 **Avviare un'asta:**\n"
+        "✂️ **Registrare un taglio (Solo Admin):**\n"
+        "`/taglia NomeGiocatore Prezzo Utente`\n\n"
+        f"🟢 **Avviare un'asta (Max {MAX_ASTE_CONTEMPORANEE} in simultanea per squadra):**\n"
         "`/asta NomeGiocatore QuotaMassima` (o `/a`)\n\n"
         "⚡ **Rilanciare:**\n"
         "`/rilancio NomeGiocatore NuovaOfferta` (o `/ril`)\n\n"
         "📊 **Stato Aste:**\n"
-        "`/stato` - Mostra le aste attive ed il tempo rimanente."
+        "`/stato` - Mostra le aste attive ed i tagli registrati."
     )
     await update.message.reply_text(testo_guida, parse_mode="Markdown")
 
@@ -134,8 +187,20 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         try:
             await update.message.delete()
-        except Exception as e:
-            print(f"Errore eliminazione messaggio in nuova_asta: {e}")
+        except Exception:
+            pass
+
+    utente = get_nome_utente(update.effective_user)
+
+    # Controlla limite aste in simultanea per utente
+    aste_attive_utente = sum(1 for info in aste.values() if info["creatore"] == utente)
+    if aste_attive_utente >= MAX_ASTE_CONTEMPORANEE:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"⚠️ **Limite raggiunto!** Hai già {MAX_ASTE_CONTEMPORANEE} aste attive in simultanea. Aspetta che una di esse si concluda prima di aprirne un'altra.",
+            parse_mode="Markdown"
+        )
+        return
 
     if not context.args or len(context.args) < 2:
         await context.bot.send_message(
@@ -173,7 +238,23 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    utente = get_nome_utente(update.effective_user)
+    # Controllo regola tagli: se l'utente è quello registrato nel taglio
+    if giocatore_key in giocatori_tagliati:
+        info_taglio = giocatori_tagliati[giocatore_key]
+        # Confrontiamo sia il nomeesatto sia l'eventuale username (rimuovendo la @ per sicurezza)
+        proprietario_taglio = info_taglio["utente"].lower().replace("@", "")
+        utente_corrente_pulito = utente.lower().replace("@", "")
+        
+        if proprietario_taglio in utente_corrente_pulito or utente_corrente_pulito in proprietario_taglio:
+            prezzo_minimo = info_taglio["prezzo"]
+            if quota_massima < prezzo_minimo:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"❌ **Regola Tagli:** Avendo tagliato tu questo giocatore, la tua offerta minima iniziale deve essere almeno di **{prezzo_minimo}** crediti.",
+                    parse_mode="Markdown"
+                )
+                return
+
     ora_attuale = datetime.now()
     scadenza = ora_attuale + timedelta(hours=TIMER_ASTA_ORE)
 
@@ -192,6 +273,7 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "nome_originale": nome_giocatore,
         "offerta_attuale": offerta_pubblica,
         "ultimo_offrente": utente,
+        "creatore": utente,
         "scadenza": scadenza,
         "job": job,
         "offerte_massime": {utente: quota_massima}
@@ -210,8 +292,8 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         try:
             await update.message.delete()
-        except Exception as e:
-            print(f"Errore eliminazione messaggio in rilancio: {e}")
+        except Exception:
+            pass
 
     if not context.args or len(context.args) < 2:
         await context.bot.send_message(
@@ -243,6 +325,22 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     info_asta = aste[giocatore_key]
     utente = get_nome_utente(update.effective_user)
+
+    # Controllo regola tagli in fase di rilancio
+    if giocatore_key in giocatori_tagliati:
+        info_taglio = giocatori_tagliati[giocatore_key]
+        proprietario_taglio = info_taglio["utente"].lower().replace("@", "")
+        utente_corrente_pulito = utente.lower().replace("@", "")
+        
+        if proprietario_taglio in utente_corrente_pulito or utente_corrente_pulito in proprietario_taglio:
+            prezzo_minimo = info_taglio["prezzo"]
+            if nuova_offerta < prezzo_minimo:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"❌ **Regola Tagli:** Essendo il giocatore che hai tagliato, la tua offerta deve essere di almeno **{prezzo_minimo}** crediti.",
+                    parse_mode="Markdown"
+                )
+                return
 
     info_asta["offerte_massime"][utente] = max(info_asta["offerte_massime"].get(utente, 0), nuova_offerta)
 
@@ -291,23 +389,26 @@ async def stato_aste(update: Update, context: ContextTypes.DEFAULT_TYPE):
         messaggio += f"📅 **Mercato:** {data_inizio_mercato.strftime('%d/%m %H:%M')} ➔ {data_fine_mercato.strftime('%d/%m %H:%M')}\n\n"
 
     if not aste:
-        messaggio += "ℹ️ Al momento non ci sono aste in corso."
-        await update.message.reply_text(messaggio, parse_mode="Markdown")
-        return
+        messaggio += "ℹ️ Al momento non ci sono aste in corso.\n\n"
+    else:
+        messaggio += "📋 **ASTE ATTIVE IN CORSO:**\n"
+        ora_attuale = datetime.now()
 
-    messaggio += "📋 **ASTE ATTIVE IN CORSO:**\n\n"
-    ora_attuale = datetime.now()
+        for key, info in aste.items():
+            tempo_rimanente = info["scadenza"] - ora_attuale
+            ore, remainder = divmod(tempo_rimanente.seconds, 3600)
+            minuti, _ = divmod(remainder, 60)
 
-    for key, info in aste.items():
-        tempo_rimanente = info["scadenza"] - ora_attuale
-        ore, remainder = divmod(tempo_rimanente.seconds, 3600)
-        minuti, _ = divmod(remainder, 60)
+            messaggio += (
+                f"⚽ **{info['nome_originale']}** (Aperta da: {info['creatore']})\n"
+                f"  • Offerta: {info['offerta_attuale']} crediti (In vantaggio: {info['ultimo_offrente']})\n"
+                f"  • Tempo rimasto: ~{ore}h {minuti}m\n\n"
+            )
 
-        messaggio += (
-            f"⚽ **{info['nome_originale']}**\n"
-            f"  • Offerta: {info['offerta_attuale']} crediti (In vantaggio: {info['ultimo_offrente']})\n"
-            f"  • Tempo rimasto: ~{ore}h {minuti}m\n\n"
-        )
+    if giocatori_tagliati:
+        messaggio += "✂️ **GIOCATORI TAGLIATI REGISTRATI:**\n"
+        for key, info in giocatori_tagliati.items():
+            messaggio += f"• {key.capitalize()} ➔ {info['utente']} ({info['prezzo']} crediti)\n"
 
     await update.message.reply_text(messaggio, parse_mode="Markdown")
 
@@ -324,6 +425,7 @@ def main():
     app.add_handler(CommandHandler(["guida", "help"], guida))
     app.add_handler(CommandHandler(["setmercato"], set_mercato))
     
+    app.add_handler(CommandHandler(["taglia"], taglia_giocatore))
     app.add_handler(CommandHandler(["asta", "a"], nuova_asta))
     app.add_handler(CommandHandler(["rilancio", "ril"], rilancio))
     
