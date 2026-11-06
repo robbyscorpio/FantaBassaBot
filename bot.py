@@ -117,25 +117,30 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     testo_guida = (
         "📖 **GUIDA E REGOLAMENTO ASTE (Stile eBay)**\n\n"
         f"{info_mercato}"
-        "🟢 **Avviare un'asta:**\n"
-        "`/a NomeGiocatore QuotaMassima`\n"
-        "_(Es: `/a totti 10` - L'asta parte a 1 credito e il bot gestisce i rilanci fino a 10)_\n\n"
-        "⚡ **Rilanciare:**\n"
-        "`/r NomeGiocatore NuovaOfferta`\n"
-        "_(Es: `/r totti 12`)_\n\n"
+        "🟢 **Avviare un'asta (il tuo messaggio verrà eliminato automaticamente):**\n"
+        "`.new NomeGiocatore QuotaMassima`\n"
+        "_(Es: `.new totti 10` - L'asta parte pubblicamente a 1 credito e il bot difenderà la tua quota fino a 10)_\n\n"
+        "⚡ **Rilanciare (il tuo messaggio verrà eliminato automaticamente):**\n"
+        "`.ril NomeGiocatore NuovaOfferta`\n"
+        "_(Es: `.ril totti 12`)_\n\n"
         "📊 **Stato Aste:**\n"
         "`/stato` - Mostra le aste attive ed il tempo rimanente."
     )
     await update.message.reply_text(testo_guida, parse_mode="Markdown")
 
 async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"DEBUG: Comando /a ricevuto con argomenti: {context.args}")
+    # Cancella il messaggio dell'utente per mantenere la quota segreta
+    if update.effective_chat.type != "private":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
 
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
             "⚠️ **Formato errato!**\n"
             "Devi inserire il nome del giocatore seguito dalla quota massima.\n"
-            "Esempio: `/a totti 10`",
+            "Esempio: `.new totti 10`",
             parse_mode="Markdown"
         )
         return
@@ -146,7 +151,7 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text(
             "⚠️ **La quota deve essere un numero!**\n"
-            "Esempio corretto: `/a totti 10`",
+            "Esempio corretto: `.new totti 10`",
             parse_mode="Markdown"
         )
         return
@@ -159,7 +164,7 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if giocatore_key in aste:
         await update.message.reply_text(
-            f"⚠️ C'è già un'asta in corso per **{nome_giocatore}**! Usa `/r {nome_giocatore} [offerta]` per rilanciare.",
+            f"⚠️ C'è già un'asta in corso per **{nome_giocatore}**! Usa `.ril {nome_giocatore} [offerta]` per rilanciare.",
             parse_mode="Markdown"
         )
         return
@@ -197,10 +202,15 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"DEBUG: Comando /r ricevuto con argomenti: {context.args}")
+    # Cancella il messaggio di rilancio dell'utente
+    if update.effective_chat.type != "private":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
 
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("⚠️ Formato errato. Usa: `/r NomeGiocatore NuovaOfferta` (es: `/r totti 12`)", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Formato errato. Usa: `.ril NomeGiocatore NuovaOfferta` (es: `.ril totti 12`)", parse_mode="Markdown")
         return
 
     try:
@@ -294,8 +304,8 @@ def main():
     app.add_handler(CommandHandler(["start"], start))
     app.add_handler(CommandHandler(["guida", "help"], guida))
     app.add_handler(CommandHandler(["setmercato"], set_mercato))
-    app.add_handler(CommandHandler(["a", "asta"], nuova_asta))
-    app.add_handler(CommandHandler(["r", "rilancio"], rilancio))
+    app.add_handler(CommandHandler(["new"], nuova_asta))
+    app.add_handler(CommandHandler(["ril"], rilancio))
     app.add_handler(CommandHandler(["stato"], stato_aste))
 
     print("Bot Fantacalcio Asta in esecuzione...")
