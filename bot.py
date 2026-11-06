@@ -131,28 +131,28 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(testo_guida, parse_mode="Markdown")
 
 async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ora_attuale = datetime.now()
+    print(f"COMANDO /a RICEVUTO: {context.args}") # Stampo sui log di Render per debug
 
-    # Se siamo in chat privata, saltiamo i blocchi di chiusura mercato per facilitare i test liberi
-    if update.effective_chat.type != "private":
-        if data_inizio_mercato and ora_attuale < data_inizio_mercato:
-            await update.message.reply_text(f"⏳ **Mercato non ancora aperto!**")
-            return
-
-        if data_fine_mercato:
-            if ora_attuale >= data_fine_mercato or ora_attuale + timedelta(hours=TIMER_ASTA_ORE) > data_fine_mercato:
-                await update.message.reply_text("🔴 **Il mercato è chiuso o in scadenza!**")
-                return
-
-    if len(context.args) < 2:
-        await update.message.reply_text("⚠️ Formato errato. Usa: `/a NomeGiocatore QuotaMassima` (es: `/a totti 10`)", parse_mode="Markdown")
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ **Formato non valido!**\n"
+            "Usa il comando seguito dal nome del giocatore e dalla quota massima.\n"
+            "Esempio: `/a totti 10`",
+            parse_mode="Markdown"
+        )
         return
 
     try:
+        # Prende l'ultimo argomento come numero intero (quota)
         quota_massima = int(context.args[-1])
+        # Unisce tutti gli argomenti precedenti come nome del giocatore
         nome_giocatore = " ".join(context.args[:-1]).replace('"', '').strip()
     except ValueError:
-        await update.message.reply_text("⚠️ L'ultimo parametro deve essere un numero intero per la quota! (es: `/a totti 10`)", parse_mode="Markdown")
+        await update.message.reply_text(
+            "⚠️ **Errore nella quota!** L'ultimo valore deve essere un numero intero.\n"
+            "Esempio corretto: `/a totti 10`",
+            parse_mode="Markdown"
+        )
         return
 
     if not nome_giocatore:
@@ -166,6 +166,7 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     utente = update.effective_user.username or update.effective_user.first_name
+    ora_attuale = datetime.now()
     scadenza = ora_attuale + timedelta(hours=TIMER_ASTA_ORE)
 
     job = context.job_queue.run_once(
