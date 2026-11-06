@@ -25,7 +25,6 @@ server_thread.start()
 aste = {}  # { "nomegiocatore": { ... } }
 TIMER_ASTA_ORE = 24
 
-# Impostazioni di default (Mercato sempre aperto se non configurato)
 data_inizio_mercato = None
 data_fine_mercato = None
 
@@ -53,7 +52,7 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
     if giocatore_key in aste:
         info = aste[giocatore_key]
         nome = info["nome_originale"]
-        vincitore = info["ultimo_offrente"] or info["creatore"]
+        vincitore = info["ultimo_offrente"]
         offerta = info["offerta_attuale"]
 
         await context.bot.send_message(
@@ -78,7 +77,6 @@ async def set_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await verifica_admin(update, context):
         return
 
-    # Formato atteso: /setmercato GG/MM/AAAA HH:MM GG/MM/AAAA HH:MM
     if len(context.args) < 4:
         await update.message.reply_text(
             "⚠️ **Formato Errato!** Usa:\n"
@@ -103,7 +101,7 @@ async def set_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
     except ValueError:
-        await update.message.reply_text("⚠️ Data o ora non valide. Usa il formato `GG/MM/AAAA HH:MM` (es. `25/11/2026 15:30`).", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Data o ora non valide. Usa il formato `GG/MM/AAAA HH:MM`.", parse_mode="Markdown")
 
 async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data_inizio_mercato and data_fine_mercato:
@@ -116,26 +114,22 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         info_mercato = "📅 **PERIODO MERCATO:** Non ancora definito dagli amministratori.\n\n"
 
     testo_guida = (
-        "📖 **GUIDA E REGOLAMENTO ASTE**\n\n"
+        "📖 **GUIDA E REGOLAMENTO ASTE (Stile eBay)**\n\n"
         f"{info_mercato}"
-        "🟢 **Avviare un'asta:**\n"
-        "`/a NomeGiocatore OffertaIniziale`\n"
-        "_(Es: `/a Dybala 10` - Fai partire l'asta di 24 ore)_\n\n"
+        "🟢 **Avviare un'asta (con quota massima segreta):**\n"
+        "`/a NomeGiocatore QuotaMassima`\n"
+        "_(Es: `/a Dybala 30` - A schermo partirà a 1 credito, ma il bot difenderà le tue offerte fino a 30)_-\n\n"
         "⚡ **Rilanciare:**\n"
         "`/r NomeGiocatore NuovaOfferta`\n"
-        "_(Es: `/r Dybala 12` - Resetta il timer a 24 ore per quel giocatore)_\n\n"
+        "_(Es: `/r Dybala 15`)_\n\n"
         "📊 **Stato Aste:**\n"
-        "`/stato` - Mostra le aste attive ed il tempo rimanente.\n\n"
-        "⚙️ **Comandi Admin:**\n"
-        "`/setmercato DataInizio OraInizio DataFine OraFine`\n"
-        "_(Es: `/setmercato 01/11/2026 08:00 30/11/2026 23:59`)_"
+        "`/stato` - Mostra le aste attive ed il tempo rimanente."
     )
     await update.message.reply_text(testo_guida, parse_mode="Markdown")
 
 async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ora_attuale = datetime.now()
 
-    # Controlli temporali di apertura/chiusura
     if data_inizio_mercato and ora_attuale < data_inizio_mercato:
         await update.message.reply_text(f"⏳ **Mercato non ancora aperto!** Apertura prevista per il {data_inizio_mercato.strftime('%d/%m/%Y alle %H:%M')}.")
         return
@@ -145,7 +139,6 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("🔴 **Il mercato è chiuso!** Non è più possibile aprire nuove aste.")
             return
 
-        # Blocco aste se mancano meno di 24 ore alla fine del mercato
         if ora_attuale + timedelta(hours=TIMER_ASTA_ORE) > data_fine_mercato:
             await update.message.reply_text(
                 f"⚠️ **Tempo insufficiente!** Il mercato chiude il {data_fine_mercato.strftime('%d/%m/%Y alle %H:%M')}.\n"
@@ -154,20 +147,20 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     if len(context.args) < 2:
-        await update.message.reply_text("⚠️ Formato errato. Usa: `/a NomeGiocatore OffertaBase` (es: `/a Dybala 10`)", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Formato errato. Usa: `/a NomeGiocatore QuotaMassima` (es: `/a Dybala 30`)", parse_mode="Markdown")
         return
 
     nome_giocatore = context.args[0]
     giocatore_key = nome_giocatore.lower()
 
     try:
-        offerta_base = int(context.args[1])
+        quota_massima = int(context.args[1])
     except ValueError:
-        await update.message.reply_text("⚠️ L'offerta deve essere un numero intero!")
+        await update.message.reply_text("⚠️ La quota massima deve essere un numero intero!")
         return
 
     if giocatore_key in aste:
-        await update.message.reply_text(f"⚠️ C'è già un'asta in corso per **{nome_giocatore}**! Usa `/r {nome_giocatore} {offerta_base}` per rilanciare.", parse_mode="Markdown")
+        await update.message.reply_text(f"⚠️ C'è già un'asta in corso per **{nome_giocatore}**! Usa `/r {nome_giocatore} [offerta]` per rilanciare.", parse_mode="Markdown")
         return
 
     utente = update.effective_user.username or update.effective_user.first_name
@@ -180,31 +173,35 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name=giocatore_key
     )
 
+    # L'asta parte pubblicamente a 1, ma memorizziamo il tetto massimo dell'utente
+    offerta_pubblica = 1
+    if quota_massima < offerta_pubblica:
+        offerta_pubblica = quota_massima
+
     aste[giocatore_key] = {
         "nome_originale": nome_giocatore,
-        "offerta_attuale": offerta_base,
+        "offerta_attuale": offerta_pubblica,
         "ultimo_offrente": utente,
-        "creatore": utente,
         "scadenza": scadenza,
-        "job": job
+        "job": job,
+        "offerte_massime": {utente: quota_massima}  # Salva il tetto massimo dell'utente
     }
 
     await update.message.reply_text(
-        f"📣 **NUOVA ASTA APERTA!**\n\n"
+        f"📣 **ASTA APERTA!**\n\n"
         f"⚽ **Giocatore:** {nome_giocatore}\n"
-        f"💰 **Base d'asta:** {offerta_base} crediti\n"
-        f"👤 **Offerta di:** @{utente}\n"
-        f"⏳ **Scadenza:** 24 ore da adesso (senza ulteriori rilanci)."
+        f"💰 **Offerta attuale:** {offerta_pubblica} credito\n"
+        f"⏳ **Scadenza:** 24 ore (senza rilanci)."
     )
 
 async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ora_attuale = datetime.now()
     if data_fine_mercato and ora_attuale >= data_fine_mercato:
-        await update.message.reply_text("🔴 **Il mercato è chiuso!** Non è più possibile fare rilanci.")
+        await update.message.reply_text("🔴 **Il mercato è chiuso!** Non è possibile fare rilanci.")
         return
 
     if len(context.args) < 2:
-        await update.message.reply_text("⚠️ Formato errato. Usa: `/r NomeGiocatore NuovaOfferta` (es: `/r Dybala 12`)", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Formato errato. Usa: `/r NomeGiocatore NuovaOfferta` (es: `/r Dybala 15`)", parse_mode="Markdown")
         return
 
     nome_giocatore = context.args[0]
@@ -217,17 +214,33 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if giocatore_key not in aste:
-        await update.message.reply_text(f"❌ Non c'è nessuna asta attiva per **{nome_giocatore}**. Per aprirla usa `/a {nome_giocatore} {nuova_offerta}`.", parse_mode="Markdown")
+        await update.message.reply_text(f"❌ Non c'è nessuna asta attiva per **{nome_giocatore}**.", parse_mode="Markdown")
         return
 
     info_asta = aste[giocatore_key]
-
-    if nuova_offerta <= info_asta["offerta_attuale"]:
-        await update.message.reply_text(f"⚠️ L'offerta deve essere superiore all'offerta attuale ({info_asta['offerta_attuale']} crediti)!")
-        return
-
     utente = update.effective_user.username or update.effective_user.first_name
 
+    # Registriamo o aggiorniamo la quota massima dell'utente che rilancia
+    info_asta["offerte_massime"][utente] = max(info_asta["offerte_massime"].get(utente, 0), nuova_offerta)
+
+    # Troviamo chi ha la quota massima più alta tra tutti i partecipanti
+    miglior_offerente = max(info_asta["offerte_massime"], key=info_asta["offerte_massime"].get)
+    massimo_disponibile = info_asta["offerte_massime"][miglior_offerente]
+
+    # Calcoliamo la nuova offerta pubblica (supera il secondo offerente o si adegua)
+    offerte_ordinate = sorted(info_asta["offerte_massime"].values(), reverse=True)
+    
+    if len(offerte_ordinate) > 1:
+        # Se ci sono più persone, il prezzo sale a un credito in più del secondo massimo (ma non oltre il massimo del vincitore)
+        offerta_calcolata = min(max(info_asta["offerta_attuale"] + 1, offerte_ordinate[1] + 1), massimo_disponibile)
+    else:
+        offerta_calcolata = min(nuova_offerta, massimo_disponibile)
+
+    if offerta_calcolata <= info_asta["offerta_attuale"]:
+        await update.message.reply_text(f"⚠️ La tua offerta massima ({nuova_offerta}) è inferiore o pari all'offerta attuale coperta!")
+        return
+
+    # Resettiamo il timer di 24 ore
     info_asta["job"].schedule_removal()
     nuovo_job = context.job_queue.run_once(
         timer_asta,
@@ -236,16 +249,15 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name=giocatore_key
     )
 
-    info_asta["offerta_attuale"] = nuova_offerta
-    info_asta["ultimo_offrente"] = utente
+    info_asta["offerta_attuale"] = offerta_calcolata
+    info_asta["ultimo_offrente"] = miglior_offerente
     info_asta["scadenza"] = ora_attuale + timedelta(hours=TIMER_ASTA_ORE)
     info_asta["job"] = nuovo_job
 
     await update.message.reply_text(
-        f"🔥 **RILANCIO!**\n\n"
+        f"🔥 **RILANCIO AUTOMATICO!**\n\n"
         f"⚽ **Giocatore:** {info_asta['nome_originale']}\n"
-        f"💰 **Nuova Offerta:** {nuova_offerta} crediti\n"
-        f"👤 **Offerto da:** @{utente}\n"
+        f"💰 **Offerta attuale:** {offerta_calcolata} crediti (in vantaggio @{miglior_offerente})\n"
         f"⏱️ **Timer resettato:** 24 ore rimanenti!"
     )
 
@@ -259,7 +271,7 @@ async def stato_aste(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(messaggio, parse_mode="Markdown")
         return
 
-    messaggio += "📋 **ASTE ATTIVAMENTE IN CORSO:**\n\n"
+    messaggio += "📋 **ASTE ATTIVamente IN CORSO:**\n\n"
     ora_attuale = datetime.now()
 
     for key, info in aste.items():
@@ -269,7 +281,7 @@ async def stato_aste(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         messaggio += (
             f"⚽ **{info['nome_originale']}**\n"
-            f"  • Offerta: {info['offerta_attuale']} crediti (@{info['ultimo_offrente']})\n"
+            f"  • Offerta: {info['offerta_attuale']} crediti (In vantaggio: @{info['ultimo_offrente']})\n"
             f"  • Tempo rimasto: ~{ore}h {minuti}m\n\n"
         )
 
