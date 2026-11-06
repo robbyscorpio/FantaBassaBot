@@ -21,7 +21,7 @@ def run_server():
 server_thread = threading.Thread(target=run_server, daemon=True)
 server_thread.start()
 
-# --- 2. STATO MEMORIA, ASTE E DATE MERCATO ---
+# --- 2. STATO MEMORIA E ASTE ---
 aste = {}  # { "nomegiocatore": { ... } }
 TIMER_ASTA_ORE = 24
 
@@ -30,7 +30,6 @@ data_fine_mercato = None
 
 # --- CONTROLLO AMMINISTRATORE ---
 async def verifica_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    # In chat privata autorizziamo sempre (utile per i test)
     if update.effective_chat.type == "private":
         return True
     
@@ -107,21 +106,20 @@ async def set_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Data o ora non valide. Usa il formato `GG/MM/AAAA HH:MM`.", parse_mode="Markdown")
 
 async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    info_mercato = "📅 **PERIODO MERCATO:** Attivo\n\n"
     if data_inizio_mercato and data_fine_mercato:
         info_mercato = (
             f"📅 **PERIODO MERCATO:**\n"
             f"• **Inizio:** {data_inizio_mercato.strftime('%d/%m/%Y %H:%M')}\n"
-            f"• **Fine Tassativa:** {data_fine_mercato.strftime('%d/%m/%Y %H:%M')}\n\n"
+            f"• **Fine:** {data_fine_mercato.strftime('%d/%m/%Y %H:%M')}\n\n"
         )
-    else:
-        info_mercato = "📅 **PERIODO MERCATO:** Sempre aperto (nessun limite impostato per i test).\n\n"
 
     testo_guida = (
         "📖 **GUIDA E REGOLAMENTO ASTE (Stile eBay)**\n\n"
         f"{info_mercato}"
         "🟢 **Avviare un'asta:**\n"
         "`/a NomeGiocatore QuotaMassima`\n"
-        "_(Es: `/a totti 10` - L'asta parte a 1 credito e il bot difenderà le tue offerte)_\n\n"
+        "_(Es: `/a totti 10` - L'asta parte a 1 credito e il bot gestisce i rilanci fino a 10)_\n\n"
         "⚡ **Rilanciare:**\n"
         "`/r NomeGiocatore NuovaOfferta`\n"
         "_(Es: `/r totti 12`)_\n\n"
@@ -131,25 +129,23 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(testo_guida, parse_mode="Markdown")
 
 async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"COMANDO /a RICEVUTO: {context.args}") # Stampo sui log di Render per debug
+    print(f"DEBUG: Comando /a ricevuto con argomenti: {context.args}")
 
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
-            "⚠️ **Formato non valido!**\n"
-            "Usa il comando seguito dal nome del giocatore e dalla quota massima.\n"
+            "⚠️ **Formato errato!**\n"
+            "Devi inserire il nome del giocatore seguito dalla quota massima.\n"
             "Esempio: `/a totti 10`",
             parse_mode="Markdown"
         )
         return
 
     try:
-        # Prende l'ultimo argomento come numero intero (quota)
         quota_massima = int(context.args[-1])
-        # Unisce tutti gli argomenti precedenti come nome del giocatore
         nome_giocatore = " ".join(context.args[:-1]).replace('"', '').strip()
     except ValueError:
         await update.message.reply_text(
-            "⚠️ **Errore nella quota!** L'ultimo valore deve essere un numero intero.\n"
+            "⚠️ **La quota deve essere un numero!**\n"
             "Esempio corretto: `/a totti 10`",
             parse_mode="Markdown"
         )
@@ -162,7 +158,10 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     giocatore_key = nome_giocatore.lower()
 
     if giocatore_key in aste:
-        await update.message.reply_text(f"⚠️ C'è già un'asta in corso per **{nome_giocatore}**! Usa `/r {nome_giocatore} [offerta]` per rilanciare.", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"⚠️ C'è già un'asta in corso per **{nome_giocatore}**! Usa `/r {nome_giocatore} [offerta]` per rilanciare.",
+            parse_mode="Markdown"
+        )
         return
 
     utente = update.effective_user.username or update.effective_user.first_name
@@ -198,7 +197,9 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2:
+    print(f"DEBUG: Comando /r ricevuto con argomenti: {context.args}")
+
+    if not context.args or len(context.args) < 2:
         await update.message.reply_text("⚠️ Formato errato. Usa: `/r NomeGiocatore NuovaOfferta` (es: `/r totti 12`)", parse_mode="Markdown")
         return
 
