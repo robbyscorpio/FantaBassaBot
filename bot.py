@@ -21,10 +21,28 @@ def run_server():
 server_thread = threading.Thread(target=run_server, daemon=True)
 server_thread.start()
 
-# --- 2. MEMORIA ASTE E MERCATO ---
-mercato_aperto = True  # Di default il mercato parte aperto
-aste = {}  # Dizionario per gestire le aste simultanee: { "nomegiocatore": { ... } }
+# --- 2. STATO MEMORIA, ASTE E DATE MERCATO ---
+aste = {}  # { "nomegiocatore": { ... } }
 TIMER_ASTA_ORE = 24
+
+# Impostazioni di default (Mercato sempre aperto se non configurato)
+data_inizio_mercato = None
+data_fine_mercato = None
+
+# --- CONTROLLO AMMINISTRATORE ---
+async def verifica_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if update.effective_chat.type == "private":
+        return True
+    
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    member = await context.bot.get_chat_member(chat_id, user_id)
+    
+    if member.status in ["creator", "administrator"]:
+        return True
+    
+    await update.message.reply_text("⛔ **Comando riservato agli amministratori del gruppo.**")
+    return False
 
 # --- 3. GESTORE TIMER ASTA ---
 async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
@@ -35,12 +53,8 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
     if giocatore_key in aste:
         info = aste[giocatore_key]
         nome = info["nome_originale"]
-        vincitore = info["ultimo_offrente"]
+        vincitore = info["ultimo_offrente"] or info["creatore"]
         offerta = info["offerta_attuale"]
-
-        # Se nessuno ha offerto oltre la base
-        if vincitore is None:
-            vincitore = info["creatore"]
 
         await context.bot.send_message(
             chat_id=chat_id,
@@ -56,40 +70,88 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Benvenuto nel Bot Aste Fantacalcio!\n"
-        "Usa /guida o /help per vedere le istruzioni e la lista dei comandi."
+        "Usa `/guida` per consultare le istruzioni e le date del mercato.",
+        parse_mode="Markdown"
     )
 
+async def set_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await verifica_admin(update, context):
+        return
+
+    # Formato atteso: /setmercato GG/MM/AAAA HH:MM GG/MM/AAAA HH:MM
+    if len(context.args) < 4:
+        await update.message.reply_text(
+            "⚠️ **Formato Errato!** Usa:\n"
+            "`/setmercato DataInizio OraInizio DataFine OraFine`\n\n"
+            "Esempio:\n`/setmercato 01/11/2026 08:00 30/11/2026 23:59`",
+            parse_mode="Markdown"
+        )
+        return
+
+    str_inizio = f"{context.args[0]} {context.args[1]}"
+    str_fine = f"{context.args[2]} {context.args[3]}"
+
+    try:
+        global data_inizio_mercato, data_fine_mercato
+        data_inizio_mercato = datetime.strptime(str_inizio, "%d/%m/%Y %H:%M")
+        data_fine_mercato = datetime.strptime(str_fine, "%d/%m/%Y %H:%M")
+
+        await update.message.reply_text(
+            f"📅 **PERIODO MERCATO IMPOSTATO!**\n\n"
+            f"🟢 **Apertura:** {data_inizio_mercato.strftime('%d/%m/%Y alle %H:%M')}\n"
+            f"🔴 **Chiusura:** {data_fine_mercato.strftime('%d/%m/%Y alle %H:%M')}",
+            parse_mode="Markdown"
+        )
+    except ValueError:
+        await update.message.reply_text("⚠️ Data o ora non valide. Usa il formato `GG/MM/AAAA HH:MM` (es. `25/11/2026 15:30`).", parse_mode="Markdown")
+
 async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if data_inizio_mercato and data_fine_mercato:
+        info_mercato = (
+            f"📅 **PERIODO MERCATO:**\n"
+            f"• **Inizio:** {data_inizio_mercato.strftime('%d/%m/%Y %H:%M')}\n"
+            f"• **Fine Tassativa:** {data_fine_mercato.strftime('%d/%m/%Y %H:%M')}\n\n"
+        )
+    else:
+        info_mercato = "📅 **PERIODO MERCATO:** Non ancora definito dagli amministratori.\n\n"
+
     testo_guida = (
-        "📖 **GUIDA E COMANDI MERCATO**\n\n"
+        "📖 **GUIDA E REGOLAMENTO ASTE**\n\n"
+        f"{info_mercato}"
         "🟢 **Avviare un'asta:**\n"
         "`/a NomeGiocatore OffertaIniziale`\n"
-        "_(Es: `/a Dybala 10` - Fai partire un'asta di 24 ore)_\n\n"
+        "_(Es: `/a Dybala 10` - Fai partire l'asta di 24 ore)_\n\n"
         "⚡ **Rilanciare:**\n"
         "`/r NomeGiocatore NuovaOfferta`\n"
         "_(Es: `/r Dybala 12` - Resetta il timer a 24 ore per quel giocatore)_\n\n"
         "📊 **Stato Aste:**\n"
-        "`/stato` - Mostra tutte le aste attive e il tempo rimanente.\n\n"
-        "⚙️ **Comandi Admin/Mercato:**\n"
-        "`/aprimercato` - Apre la sessione d'asta.\n"
-        "`/chiudomercato` - Blocca l'avvio di nuove aste."
+        "`/stato` - Mostra le aste attive ed il tempo rimanente.\n\n"
+        "⚙️ **Comandi Admin:**\n"
+        "`/setmercato DataInizio OraInizio DataFine OraFine`\n"
+        "_(Es: `/setmercato 01/11/2026 08:00 30/11/2026 23:59`)_"
     )
     await update.message.reply_text(testo_guida, parse_mode="Markdown")
 
-async def apri_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global mercato_aperto
-    mercato_aperto = True
-    await update.message.reply_text("🟢 **Il mercato delle aste è ufficialmente APERTO!**")
-
-async def chiudi_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global mercato_aperto
-    mercato_aperto = False
-    await update.message.reply_text("🔴 **Il mercato è CHIUSO.** Non è possibile aprire nuove aste.")
-
 async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not mercato_aperto:
-        await update.message.reply_text("❌ Il mercato è attualmente chiuso! Non puoi aprire nuove aste.")
+    ora_attuale = datetime.now()
+
+    # Controlli temporali di apertura/chiusura
+    if data_inizio_mercato and ora_attuale < data_inizio_mercato:
+        await update.message.reply_text(f"⏳ **Mercato non ancora aperto!** Apertura prevista per il {data_inizio_mercato.strftime('%d/%m/%Y alle %H:%M')}.")
         return
+
+    if data_fine_mercato:
+        if ora_attuale >= data_fine_mercato:
+            await update.message.reply_text("🔴 **Il mercato è chiuso!** Non è più possibile aprire nuove aste.")
+            return
+
+        # Blocco aste se mancano meno di 24 ore alla fine del mercato
+        if ora_attuale + timedelta(hours=TIMER_ASTA_ORE) > data_fine_mercato:
+            await update.message.reply_text(
+                f"⚠️ **Tempo insufficiente!** Il mercato chiude il {data_fine_mercato.strftime('%d/%m/%Y alle %H:%M')}.\n"
+                f"Non ci sono le 24 ore garantite necessarie per aprire una nuova asta."
+            )
+            return
 
     if len(context.args) < 2:
         await update.message.reply_text("⚠️ Formato errato. Usa: `/a NomeGiocatore OffertaBase` (es: `/a Dybala 10`)", parse_mode="Markdown")
@@ -109,9 +171,8 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     utente = update.effective_user.username or update.effective_user.first_name
-    scadenza = datetime.now() + timedelta(hours=TIMER_ASTA_ORE)
+    scadenza = ora_attuale + timedelta(hours=TIMER_ASTA_ORE)
 
-    # Programma la chiusura tra 24 ore
     job = context.job_queue.run_once(
         timer_asta,
         when=timedelta(hours=TIMER_ASTA_ORE),
@@ -137,6 +198,11 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ora_attuale = datetime.now()
+    if data_fine_mercato and ora_attuale >= data_fine_mercato:
+        await update.message.reply_text("🔴 **Il mercato è chiuso!** Non è più possibile fare rilanci.")
+        return
+
     if len(context.args) < 2:
         await update.message.reply_text("⚠️ Formato errato. Usa: `/r NomeGiocatore NuovaOfferta` (es: `/r Dybala 12`)", parse_mode="Markdown")
         return
@@ -162,7 +228,6 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     utente = update.effective_user.username or update.effective_user.first_name
 
-    # Cancella il vecchio timer e ne programma uno nuovo da 24 ore
     info_asta["job"].schedule_removal()
     nuovo_job = context.job_queue.run_once(
         timer_asta,
@@ -173,7 +238,7 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     info_asta["offerta_attuale"] = nuova_offerta
     info_asta["ultimo_offrente"] = utente
-    info_asta["scadenza"] = datetime.now() + timedelta(hours=TIMER_ASTA_ORE)
+    info_asta["scadenza"] = ora_attuale + timedelta(hours=TIMER_ASTA_ORE)
     info_asta["job"] = nuovo_job
 
     await update.message.reply_text(
@@ -185,11 +250,16 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def stato_aste(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    messaggio = ""
+    if data_inizio_mercato and data_fine_mercato:
+        messaggio += f"📅 **Mercato:** {data_inizio_mercato.strftime('%d/%m %H:%M')} ➔ {data_fine_mercato.strftime('%d/%m %H:%M')}\n\n"
+
     if not aste:
-        await update.message.reply_text("ℹ️ Al momento non ci sono aste in corso.")
+        messaggio += "ℹ️ Al momento non ci sono aste in corso."
+        await update.message.reply_text(messaggio, parse_mode="Markdown")
         return
 
-    messaggio = "📋 **ASTE ATTIVAMENTE IN CORSO:**\n\n"
+    messaggio += "📋 **ASTE ATTIVAMENTE IN CORSO:**\n\n"
     ora_attuale = datetime.now()
 
     for key, info in aste.items():
@@ -214,11 +284,9 @@ def main():
 
     app = Application.builder().token(token).build()
 
-    # Registrazione Comandi
     app.add_handler(CommandHandler(["start"], start))
     app.add_handler(CommandHandler(["guida", "help"], guida))
-    app.add_handler(CommandHandler(["aprimercato"], apri_mercato))
-    app.add_handler(CommandHandler(["chiudomercato"], chiudi_mercato))
+    app.add_handler(CommandHandler(["setmercato"], set_mercato))
     app.add_handler(CommandHandler(["a", "asta"], nuova_asta))
     app.add_handler(CommandHandler(["r", "rilancio"], rilancio))
     app.add_handler(CommandHandler(["stato"], stato_aste))
