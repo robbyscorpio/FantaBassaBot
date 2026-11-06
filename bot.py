@@ -28,6 +28,13 @@ TIMER_ASTA_ORE = 24
 data_inizio_mercato = None
 data_fine_mercato = None
 
+# Funzione di utilità per ricavare il nome utente in modo sicuro
+def get_nome_utente(user) -> str:
+    if user.username:
+        return f"@{user.username}"
+    else:
+        return user.first_name
+
 # --- CONTROLLO AMMINISTRATORE ---
 async def verifica_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if update.effective_chat.type == "private":
@@ -61,7 +68,7 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
             chat_id=chat_id,
             text=f"🔴 **ASTA CHIUSA!** 🔴\n\n"
                  f"⚽ **Giocatore:** {nome}\n"
-                 f"🏆 **Aggiudicato a:** @{vincitore}\n"
+                 f"🏆 **Aggiudicato a:** {vincitore}\n"
                  f"💰 **Prezzo finale:** {offerta} crediti"
         )
         del aste[giocatore_key]
@@ -117,12 +124,10 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     testo_guida = (
         "📖 **GUIDA E REGOLAMENTO ASTE (Stile eBay)**\n\n"
         f"{info_mercato}"
-        "🟢 **Avviare un'asta (il tuo messaggio verrà eliminato automaticamente):**\n"
-        "`/asta NomeGiocatore QuotaMassima` (o `/a`)\n"
-        "_(Es: `/asta totti 10` - L'asta parte a 1 e il bot difende la tua quota fino a 10)_\n\n"
-        "⚡ **Rilanciare (il tuo messaggio verrà eliminato automaticamente):**\n"
-        "`/rilancio NomeGiocatore NuovaOfferta` (o `/ril`)\n"
-        "_(Es: `/rilancio totti 12`)_\n\n"
+        "🟢 **Avviare un'asta:**\n"
+        "`/asta NomeGiocatore QuotaMassima` (o `/a`)\n\n"
+        "⚡ **Rilanciare:**\n"
+        "`/rilancio NomeGiocatore NuovaOfferta` (o `/ril`)\n\n"
         "📊 **Stato Aste:**\n"
         "`/stato` - Mostra le aste attive ed il tempo rimanente."
     )
@@ -168,7 +173,7 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    utente = update.effective_user.username or update.effective_user.first_name
+    utente = get_nome_utente(update.effective_user)
     ora_attuale = datetime.now()
     scadenza = ora_attuale + timedelta(hours=TIMER_ASTA_ORE)
 
@@ -196,7 +201,7 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📣 **ASTA APERTA!**\n\n"
         f"⚽ **Giocatore:** {nome_giocatore}\n"
         f"💰 **Offerta attuale:** {offerta_pubblica} credito\n"
-        f"👤 **In vantaggio:** @{utente}\n"
+        f"👤 **In vantaggio:** {utente}\n"
         f"⏳ **Scadenza:** 24 ore (senza rilanci)."
     )
 
@@ -225,7 +230,7 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     info_asta = aste[giocatore_key]
-    utente = update.effective_user.username or update.effective_user.first_name
+    utente = get_nome_utente(update.effective_user)
 
     info_asta["offerte_massime"][utente] = max(info_asta["offerte_massime"].get(utente, 0), nuova_offerta)
 
@@ -260,7 +265,7 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔥 **RILANCIO AUTOMATICO!**\n\n"
         f"⚽ **Giocatore:** {info_asta['nome_originale']}\n"
         f"💰 **Offerta attuale:** {offerta_calcolata} crediti\n"
-        f"👤 **In vantaggio:** @{miglior_offerente}\n"
+        f"👤 **In vantaggio:** {miglior_offerente}\n"
         f"⏱️ **Timer resettato:** 24 ore rimanenti!"
     )
 
@@ -284,7 +289,7 @@ async def stato_aste(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         messaggio += (
             f"⚽ **{info['nome_originale']}**\n"
-            f"  • Offerta: {info['offerta_attuale']} crediti (In vantaggio: @{info['ultimo_offrente']})\n"
+            f"  • Offerta: {info['offerta_attuale']} crediti (In vantaggio: {info['ultimo_offrente']})\n"
             f"  • Tempo rimasto: ~{ore}h {minuti}m\n\n"
         )
 
@@ -303,7 +308,6 @@ def main():
     app.add_handler(CommandHandler(["guida", "help"], guida))
     app.add_handler(CommandHandler(["setmercato"], set_mercato))
     
-    # Comandi ufficiali con lo slash (con abbreviazioni incluse)
     app.add_handler(CommandHandler(["asta", "a"], nuova_asta))
     app.add_handler(CommandHandler(["rilancio", "ril"], rilancio))
     
