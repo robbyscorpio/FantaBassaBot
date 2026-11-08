@@ -62,7 +62,7 @@ def carica_dati_da_excel():
         fogli_disponibili = xls.sheet_names
         print(f"📊 Fogli trovati nel file Excel: {fogli_disponibili}")
 
-        # 1. LETTURA DEL FOGLIO 'Rosa' (4 colonne: Calciatore, Ruolo, Squadra, Quotazione)
+        # 1. LETTURA DEL FOGLIO 'Rosa' (Calciatore, Ruolo, Squadra, Quotazione)
         nome_foglio_rosa = next((f for f in fogli_disponibili if f.lower() == 'rosa'), fogli_disponibili[0])
         df_rosa = pd.read_excel(xls, sheet_name=nome_foglio_rosa)
         print(f"📄 Lette {len(df_rosa)} righe dal foglio '{nome_foglio_rosa}'")
@@ -81,7 +81,7 @@ def carica_dati_da_excel():
             except ValueError:
                 prezzo = 0
 
-            # Considera libero se la colonna squadra è vuota, NaN, 'nan' o 'svincolato'
+            # Considera libero se la colonna squadra è vuota, NaN, o 'svincolato'
             is_libero = not squadra or squadra.lower() in ["nan", "none", "svincolato", "libero", ""]
 
             if not is_libero:
@@ -102,13 +102,13 @@ def carica_dati_da_excel():
         print(f"✅ Caricati {len(giocatori_liberi)} giocatori liberi e {sum(len(v) for v in rose_squadre.values())} giocatori in rosa.")
         print(f"🏰 Squadre trovate nelle rose: {list(rose_squadre.keys())}")
 
-        # 2. LETTURA DEL FOGLIO DEI CREDITI
+        # 2. LETTURA DEL FOGLIO DEI CREDITI (Squadra, Crediti rimasti)
         nome_foglio_crediti = next((f for f in fogli_disponibili if f.lower() == 'crediti'), None)
         if nome_foglio_crediti:
             df_crediti = pd.read_excel(xls, sheet_name=nome_foglio_crediti)
             for _, row in df_crediti.iterrows():
                 squadra = str(row.get("Squadra", "")).strip()
-                crediti = row.get("Crediti", 0)
+                crediti = row.get("Crediti rimasti", 0)
                 
                 if not squadra or squadra.lower() == "nan":
                     continue
@@ -122,14 +122,14 @@ def carica_dati_da_excel():
         else:
             print("⚠️ Attenzione: Foglio 'Crediti' non trovato nel file Excel.")
 
-        # 3. LETTURA DEL FOGLIO DEI TAGLI
+        # 3. LETTURA DEL FOGLIO DEI TAGLI (Nome giocatore, Squadra, Prezzo Taglio)
         nome_foglio_tagli = next((f for f in fogli_disponibili if f.lower() == 'tagli'), None)
         if nome_foglio_tagli:
-            df_tagli = pd.read_excel(xls, sheet_name='Tagli')
+            df_tagli = pd.read_excel(xls, sheet_name=nome_foglio_tagli)
             for _, row in df_tagli.iterrows():
-                nome = str(row.get("Calciatore", "")).strip()
+                nome = str(row.get("Nome giocatore", "")).strip()
                 squadra = str(row.get("Squadra", "")).strip()
-                prezzo = row.get("PrezzoTaglio", 0)
+                prezzo = row.get("Prezzo Taglio", 0)
                 
                 if not nome or nome.lower() == "nan":
                     continue
