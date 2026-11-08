@@ -62,16 +62,16 @@ def carica_dati_da_excel():
         fogli_disponibili = xls.sheet_names
         print(f"📊 Fogli trovati nel file Excel: {fogli_disponibili}")
 
-        # 1. LETTURA DEL FOGLIO 'Rosa' E DEI LIBERI
-        nome_foglio_rosa = 'Rosa' if 'Rosa' in fogli_disponibili else fogli_disponibili[0]
+        # 1. LETTURA DEL FOGLIO 'Rosa' (4 colonne: Calciatore, Ruolo, Squadra, Quotazione)
+        nome_foglio_rosa = next((f for f in fogli_disponibili if f.lower() == 'rosa'), fogli_disponibili[0])
         df_rosa = pd.read_excel(xls, sheet_name=nome_foglio_rosa)
         print(f"📄 Lette {len(df_rosa)} righe dal foglio '{nome_foglio_rosa}'")
         
         for _, row in df_rosa.iterrows():
-            nome = str(row.get("NomeGiocatore", "")).strip()
+            nome = str(row.get("Calciatore", "")).strip()
             ruolo = str(row.get("Ruolo", "")).strip().upper()
             squadra = str(row.get("Squadra", "")).strip()
-            prezzo = row.get("Prezzo", 0)
+            prezzo = row.get("Quotazione", 0)
             
             if not nome or nome.lower() == "nan":
                 continue
@@ -81,7 +81,10 @@ def carica_dati_da_excel():
             except ValueError:
                 prezzo = 0
 
-            if squadra and squadra.lower() != "nan" and squadra.lower() != "svincolato" and squadra != "":
+            # Considera libero se la colonna squadra è vuota, NaN, 'nan' o 'svincolato'
+            is_libero = not squadra or squadra.lower() in ["nan", "none", "svincolato", "libero", ""]
+
+            if not is_libero:
                 if squadra not in rose_squadre:
                     rose_squadre[squadra] = []
                 rose_squadre[squadra].append({
@@ -97,10 +100,12 @@ def carica_dati_da_excel():
                 })
 
         print(f"✅ Caricati {len(giocatori_liberi)} giocatori liberi e {sum(len(v) for v in rose_squadre.values())} giocatori in rosa.")
+        print(f"🏰 Squadre trovate nelle rose: {list(rose_squadre.keys())}")
 
         # 2. LETTURA DEL FOGLIO DEI CREDITI
-        if 'Crediti' in fogli_disponibili:
-            df_crediti = pd.read_excel(xls, sheet_name='Crediti')
+        nome_foglio_crediti = next((f for f in fogli_disponibili if f.lower() == 'crediti'), None)
+        if nome_foglio_crediti:
+            df_crediti = pd.read_excel(xls, sheet_name=nome_foglio_crediti)
             for _, row in df_crediti.iterrows():
                 squadra = str(row.get("Squadra", "")).strip()
                 crediti = row.get("Crediti", 0)
@@ -118,10 +123,11 @@ def carica_dati_da_excel():
             print("⚠️ Attenzione: Foglio 'Crediti' non trovato nel file Excel.")
 
         # 3. LETTURA DEL FOGLIO DEI TAGLI
-        if 'Tagli' in fogli_disponibili:
+        nome_foglio_tagli = next((f for f in fogli_disponibili if f.lower() == 'tagli'), None)
+        if nome_foglio_tagli:
             df_tagli = pd.read_excel(xls, sheet_name='Tagli')
             for _, row in df_tagli.iterrows():
-                nome = str(row.get("NomeGiocatore", "")).strip()
+                nome = str(row.get("Calciatore", "")).strip()
                 squadra = str(row.get("Squadra", "")).strip()
                 prezzo = row.get("PrezzoTaglio", 0)
                 
@@ -278,7 +284,7 @@ async def bottone_rosa_cliccato(update: Update, context: ContextTypes.DEFAULT_TY
     squadra = query.data.replace("rosa_", "")
 
     if squadra not in rose_squadre or not rose_squadre[squadra]:
-        await query.edit_message_text(text=f"ℹ️ La rosa della squadra **{squadra}** è attualmente vuota.", parse_mode="Markdown")
+        await query.edit_message_text(text=f"ℹ️ La rosa della squadra **{squadra}** è attualmente vuota o non ci sono giocatori associati nel foglio.", parse_mode="Markdown")
         return
 
     rosa = rose_squadre[squadra]
@@ -343,7 +349,7 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 **GUIDA E REGOLAMENTO ASTE**\n\n"
         "⚙️ **Regole Fondamentali:**\n"
         "1️⃣ **Solo Liberi:** Si può offrire esclusivamente per i giocatori liberi.\n"
-        "2️⃣ **Nome Esatto:** Il nome del giocatore deve essere inserito **esattamente** come scritto nell'elenco ufficiale.\n"
+        "2️⃣ **Nome Esatto:** Il nome del giocatore deve essere inserito **esattamente** come scritto nella colonna 'Calciatore' dell'elenco ufficiale.\n"
         "3️⃣ **Limiti Rosa:** È obbligatorio mantenere i seguenti limiti per reparto:\n"
         "   •  P: max 3 | D: max 8 | C: max 8 | A: max 6\n"
         "4️⃣ **Regola Tagli:** Se si offre per un giocatore presente nel foglio 'Tagli', l'offerta minima deve essere pari al valore del taglio stabilito.\n"
@@ -355,8 +361,8 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/assegnati` - Storico acquisti\n"
         "`/stato` - Aste attive\n\n"
         f"🟢 **Aste e Rilanci:**\n"
-        "`/asta NomeGiocatore Quota` (Max {MAX_ASTE_CONTEMPORANEE} simultanee)\n"
-        "`/rilancio NomeGiocatore NuovaOfferta`"
+        "`/asta NomeCalciatore Quota` (Max {MAX_ASTE_CONTEMPORANEE} simultanee)\n"
+        "`/rilancio NomeCalciatore NuovaOfferta`"
     )
     await update.message.reply_text(testo_guida, parse_mode="Markdown")
 
@@ -387,7 +393,7 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("⚠️ Usa: `/asta NomeGiocatore Quota`\n*(Ricorda di inserire il nome esatto come da elenco!)*", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Usa: `/asta NomeCalciatore Quota`\n*(Ricorda di inserire il nome esatto come da colonna Calciatore!)*", parse_mode="Markdown")
         return
 
     try:
@@ -494,7 +500,7 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("⚠️ Usa: `/rilancio NomeGiocatore NuovaOfferta`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Usa: `/rilancio NomeCalciatore NuovaOfferta`", parse_mode="Markdown")
         return
 
     try:
