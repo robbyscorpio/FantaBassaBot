@@ -51,7 +51,7 @@ def get_nome_squadra(user_fullname_or_username) -> str:
 # --- CARICAMENTO AUTOMATICO DA EXCEL ---
 def carica_dati_da_excel():
     global rose_squadre, crediti_squadre, giocatori_tagliati, giocatori_liberi
-    file_excel = "Listone_Fantacalcio.xlsx"  # Nome corretto con le maiuscole esatte
+    file_excel = "Listone_Fantacalcio.xlsx"
     
     if not os.path.exists(file_excel):
         print(f"❌ ERRORE CRITICO: Il file {file_excel} NON è stato trovato nella cartella del progetto!")
@@ -81,7 +81,6 @@ def carica_dati_da_excel():
             except ValueError:
                 prezzo = 0
 
-            # Se la squadra è compilata, va nella rosa della squadra
             if squadra and squadra.lower() != "nan" and squadra.lower() != "svincolato" and squadra != "":
                 if squadra not in rose_squadre:
                     rose_squadre[squadra] = []
@@ -91,7 +90,6 @@ def carica_dati_da_excel():
                     "prezzo": prezzo
                 })
             else:
-                # Se la squadra è vuota, è un giocatore libero/svincolato
                 giocatori_liberi.append({
                     "giocatore": nome,
                     "ruolo": ruolo,
@@ -615,7 +613,7 @@ def main():
     app.add_handler(CommandHandler(["liberi"], seleziona_liberi))
     app.add_handler(CallbackQueryHandler(bottone_liberi_cliccato, pattern="^liberi_"))
     
-    app.add_handler(CommandHandler(["asta", "a"], nueva_asta))
+    app.add_handler(CommandHandler(["asta", "a"], nuova_asta))
     app.add_handler(CommandHandler(["rilancio", "ril"], rilancio))
     
     app.add_handler(CommandHandler(["stato"], stato_aste))
