@@ -156,6 +156,7 @@ async def verifica_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- 3. GESTORE TIMER ASTA ---
 async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
+    global giocatori_liberi  # Dichiarata all'inizio della funzione
     job = context.job
     giocatore_key = job.data["giocatore_key"]
     chat_id = job.data["chat_id"]
@@ -190,7 +191,6 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
         })
 
         # Rimuove dai liberi
-        global giocatori_liberi
         giocatori_liberi = [l for l in giocatori_liberi if l["giocatore"].lower() != giocatore_key]
 
         # Scala crediti residui
