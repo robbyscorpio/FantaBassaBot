@@ -51,19 +51,21 @@ def get_nome_squadra(user_fullname_or_username) -> str:
 # --- CARICAMENTO AUTOMATICO DA EXCEL ---
 def carica_dati_da_excel():
     global rose_squadre, crediti_squadre, giocatori_tagliati, giocatori_liberi
-    file_excel = "listone_fantacalcio.xlsx"
+    file_excel = "Listone_Fantacalcio.xlsx"  # Nome corretto con le maiuscole esatte
     
     if not os.path.exists(file_excel):
-        print(f"ℹ️ File {file_excel} non trovato. Nessun dato precaricato.")
+        print(f"❌ ERRORE CRITICO: Il file {file_excel} NON è stato trovato nella cartella del progetto!")
         return
 
     try:
         xls = pd.ExcelFile(file_excel)
         fogli_disponibili = xls.sheet_names
+        print(f"📊 Fogli trovati nel file Excel: {fogli_disponibili}")
 
-        # 1. LETTURA DEL FOGLIO DELLE ROSE E DEI LIBERI
+        # 1. LETTURA DEL FOGLIO 'Rosa' E DEI LIBERI
         nome_foglio_rosa = 'Rosa' if 'Rosa' in fogli_disponibili else fogli_disponibili[0]
         df_rosa = pd.read_excel(xls, sheet_name=nome_foglio_rosa)
+        print(f"📄 Lette {len(df_rosa)} righe dal foglio '{nome_foglio_rosa}'")
         
         for _, row in df_rosa.iterrows():
             nome = str(row.get("NomeGiocatore", "")).strip()
@@ -79,7 +81,8 @@ def carica_dati_da_excel():
             except ValueError:
                 prezzo = 0
 
-            if squadra and squadra.lower() != "nan" and squadra != "":
+            # Se la squadra è compilata, va nella rosa della squadra
+            if squadra and squadra.lower() != "nan" and squadra.lower() != "svincolato" and squadra != "":
                 if squadra not in rose_squadre:
                     rose_squadre[squadra] = []
                 rose_squadre[squadra].append({
@@ -88,13 +91,14 @@ def carica_dati_da_excel():
                     "prezzo": prezzo
                 })
             else:
+                # Se la squadra è vuota, è un giocatore libero/svincolato
                 giocatori_liberi.append({
                     "giocatore": nome,
                     "ruolo": ruolo,
                     "prezzo": prezzo
                 })
 
-        print(f"✅ Rose e giocatori liberi caricati correttamente!")
+        print(f"✅ Caricati {len(giocatori_liberi)} giocatori liberi e {sum(len(v) for v in rose_squadre.values())} giocatori in rosa.")
 
         # 2. LETTURA DEL FOGLIO DEI CREDITI
         if 'Crediti' in fogli_disponibili:
@@ -111,7 +115,9 @@ def carica_dati_da_excel():
                     crediti = 0
                 
                 crediti_squadre[squadra] = crediti
-            print("✅ Crediti iniziali caricati!")
+            print(f"✅ Caricati i crediti per {len(crediti_squadre)} squadre.")
+        else:
+            print("⚠️ Attenzione: Foglio 'Crediti' non trovato nel file Excel.")
 
         # 3. LETTURA DEL FOGLIO DEI TAGLI
         if 'Tagli' in fogli_disponibili:
@@ -133,10 +139,10 @@ def carica_dati_da_excel():
                     "squadra": squadra,
                     "prezzo": prezzo
                 }
-            print("✅ Giocatori tagliati caricati!")
+            print(f"✅ Caricati {len(giocatori_tagliati)} giocatori tagliati.")
 
     except Exception as e:
-        print(f"❌ Errore durante la lettura del file Excel: {e}")
+        print(f"❌ Errore critico durante la lettura del file Excel: {e}")
 
 # --- CONTROLLO AMMINISTRATORE ---
 async def verifica_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -156,7 +162,7 @@ async def verifica_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- 3. GESTORE TIMER ASTA ---
 async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
-    global giocatori_liberi  # Dichiarata all'inizio della funzione
+    global giocatori_liberi
     job = context.job
     giocatore_key = job.data["giocatore_key"]
     chat_id = job.data["chat_id"]
@@ -167,7 +173,6 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
         vincitore = info["squadra_offerente"]
         offerta = info["offerta_attuale"]
 
-        # Registra nello storico
         storico_acquisti.append({
             "giocatore": nome,
             "vincitore": vincitore,
@@ -177,7 +182,6 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
         if vincitore not in rose_squadre:
             rose_squadre[vincitore] = []
         
-        # Recupera il ruolo del giocatore
         ruolo_giocatore = "N/D"
         for lib in giocatori_liberi:
             if lib["giocatore"].lower() == giocatore_key:
@@ -190,10 +194,8 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
             "prezzo": offerta
         })
 
-        # Rimuove dai liberi
         giocatori_liberi = [l for l in giocatori_liberi if l["giocatore"].lower() != giocatore_key]
 
-        # Scala crediti residui
         if vincitore in crediti_squadre:
             crediti_squadre[vincitore] = max(0, crediti_squadre[vincitore] - offerta)
 
@@ -266,7 +268,7 @@ async def mostra_crediti(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def seleziona_rosa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tutte_squadre = list(set(list(rose_squadre.keys()) + list(crediti_squadre.keys())))
     if not tutte_squadre:
-        await update.message.reply_text("ℹ️ Nessuna squadra registrata al momento.", parse_mode="Markdown")
+        await update.message.reply_text("ℹ️ Nessuna squadra trovata. Controlla che il file Excel sia caricato correttamente.", parse_mode="Markdown")
         return
 
     keyboard = [[InlineKeyboardButton(s, callback_data=f"rosa_{s}")] for s in sorted(tutte_squadre)]
@@ -278,7 +280,7 @@ async def bottone_rosa_cliccato(update: Update, context: ContextTypes.DEFAULT_TY
     squadra = query.data.replace("rosa_", "")
 
     if squadra not in rose_squadre or not rose_squadre[squadra]:
-        await query.edit_message_text(text=f"ℹ️ La rosa della squadra **{squadra}** è vuota.", parse_mode="Markdown")
+        await query.edit_message_text(text=f"ℹ️ La rosa della squadra **{squadra}** è attualmente vuota.", parse_mode="Markdown")
         return
 
     rosa = rose_squadre[squadra]
@@ -297,7 +299,7 @@ async def bottone_rosa_cliccato(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def seleziona_liberi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not giocatori_liberi:
-        await update.message.reply_text("ℹ️ Non ci sono giocatori liberi al momento.", parse_mode="Markdown")
+        await update.message.reply_text("ℹ️ Non ci sono giocatori liberi al momento. Controlla il file Excel.", parse_mode="Markdown")
         return
 
     keyboard = [
@@ -613,7 +615,7 @@ def main():
     app.add_handler(CommandHandler(["liberi"], seleziona_liberi))
     app.add_handler(CallbackQueryHandler(bottone_liberi_cliccato, pattern="^liberi_"))
     
-    app.add_handler(CommandHandler(["asta", "a"], nuova_asta))
+    app.add_handler(CommandHandler(["asta", "a"], nueva_asta))
     app.add_handler(CommandHandler(["rilancio", "ril"], rilancio))
     
     app.add_handler(CommandHandler(["stato"], stato_aste))
