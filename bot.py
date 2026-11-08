@@ -46,8 +46,6 @@ data_fine_mercato = None
 mercato_bloccato = False
 
 def get_nome_squadra(user_fullname_or_username) -> str:
-    # Cerca di associare l'utente alla squadra se ha crediti o rosa registrati
-    # Di default restituisce il nome dell'utente Telegram se non trova una corrispondenza esatta
     return user_fullname_or_username
 
 # --- CARICAMENTO AUTOMATICO DA EXCEL ---
@@ -371,25 +369,18 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🛑 **Il mercato è attualmente bloccato dagli amministratori!**")
         return
 
-    # Per identificare la squadra dell'utente, l'utente deve specificarla o essere mappato. 
-    # Qui usiamo il nome dell'utente o chiediamo di specificare la squadra se necessario.
-    # Assumiamo temporaneamente che l'utente scriva la sua squadra o usiamo il nome Telegram.
     utente = get_nome_squadra(update.effective_user.first_name)
     if update.effective_user.username:
         utente = f"@{update.effective_user.username}"
 
-    # Nota: se gestisci le squadre con nomi personalizzati, assicurati che l'utente corrisponda o che abbia crediti associati.
-    # Verifichiamo tra le squadre registrate in crediti_squadre
     squadra_utente = None
     for s in crediti_squadre.keys():
         if s.lower() in utente.lower() or utente.lower() in s.lower():
             squadra_utente = s
             break
     if not squadra_utente:
-        # Se non trova corrispondenza esatta, prendiamo il primo argomento o l'utente stesso
         squadra_utente = utente
 
-    # Controllo limite aste simultanee
     aste_attive_utente = sum(1 for info in aste.values() if info["squadra_offerente"] == squadra_utente)
     if aste_attive_utente >= MAX_ASTE_CONTEMPORANEE:
         await update.message.reply_text(f"⚠️ Hai già {MAX_ASTE_CONTEMPORANEE} aste attive in simultanea.")
@@ -412,7 +403,6 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ C'è già un'asta in corso per **{nome_giocatore}**!")
         return
 
-    # Controllo 1: Il giocatore esiste tra i liberi?
     giocatore_trovato = None
     for lib in giocatori_liberi:
         if lib["giocatore"].lower() == giocatore_key:
@@ -427,11 +417,9 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ruolo = giocatore_trovato["ruolo"]
 
-    # Controllo 2: Il reparto è già pieno?
     rosa_attuale = rose_squadre.get(squadra_utente, [])
     conti_reparto = sum(1 for p in rosa_attuale if p.get("ruolo") == ruolo)
     
-    # Aggiungiamo anche i giocatori attualmente contesi e vinti in altre aste attive dalla stessa squadra
     for k, info in aste.items():
         if info["squadra_offerente"] == squadra_utente:
             for lib in giocatori_liberi:
@@ -445,8 +433,7 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Controllo 3: Crediti residui e somma aste simultanee
-    crediti_disponibili = crediti_squadre.get(squadra_utente, 500) # Default se non trovato
+    crediti_disponibili = crediti_squadre.get(squadra_utente, 500)
     impegno_altre_aste = sum(info["offerta_attuale"] for k, info in aste.items() if info["squadra_offerente"] == squadra_utente)
     
     if (impegno_altre_aste + quota_massima) > crediti_disponibili:
@@ -455,7 +442,6 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Controllo 4: Regola Tagli
     offerta_pubblica = 1
     if giocatore_key in giocatori_tagliati:
         prezzo_minimo = giocatori_tagliati[giocatore_key]["prezzo"]
@@ -482,7 +468,7 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     aste[giocatore_key] = {
         "nome_originale": giocatore_trovato["giocatore"],
         "offerta_attuale": offerta_pubblica,
-        "ultimo_offrente": squadratura_nome := squadra_utente,
+        "ultimo_offrente": squadra_utente,
         "squadra_offerente": squadra_utente,
         "creatore": squadra_utente,
         "scadenza": scadenza,
@@ -536,7 +522,6 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not squadra_utente:
         squadra_utente = utente
 
-    # Controllo regola tagli
     if giocatore_key in giocatori_tagliati:
         prezzo_minimo = giocatori_tagliati[giocatore_key]["prezzo"]
         if nuova_offerta < prezzo_minimo:
