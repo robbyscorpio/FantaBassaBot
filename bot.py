@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import pandas as pd
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # --- 1. SERVER HTTP PER RENDER ---
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -24,9 +24,19 @@ server_thread.start()
 
 # --- 2. STATO MEMORIA E ASTE ---
 aste = {}                # { "giocatore_key": { ... } }
-crediti_squadre = {}     # { "@utente": crediti_rimanenti }
+crediti_squadre = {}     # { "NomeSquadra": crediti_rimanenti }
+giocatori_tagliati = {}  # { "giocatore_key": { "squadra": "NomeSquadra", "prezzo": 15 } }
 storico_acquisti = []    # Lista di dizionari con i giocatori assegnati
-rose_squadre = {}        # { "@utente": [ {giocatore, ruolo, prezzo}, ... ] }
+rose_squadre = {}        # { "NomeSquadra": [ {giocatore, ruolo, prezzo}, ... ] }
+giocatori_liberi = []    # Lista di dizionari con i giocatori svincolati {giocatore, ruolo, prezzo}
+
+# Limiti massimi per reparto
+LIMITI_ROSA = {
+    "P": 3,
+    "D": 8,
+    "C": 8,
+    "A": 6
+}
 
 TIMER_ASTA_ORE = 24
 MAX_ASTE_CONTEMPORANEE = 2
@@ -35,14 +45,14 @@ data_inizio_mercato = None
 data_fine_mercato = None
 mercato_bloccato = False
 
-def get_nome_utente(user) -> str:
-    if user.username:
-        return f"@{user.username}"
-    return user.first_name
+def get_nome_squadra(user_fullname_or_username) -> str:
+    # Cerca di associare l'utente alla squadra se ha crediti o rosa registrati
+    # Di default restituisce il nome dell'utente Telegram se non trova una corrispondenza esatta
+    return user_fullname_or_username
 
 # --- CARICAMENTO AUTOMATICO DA EXCEL ---
 def carica_dati_da_excel():
-    global rose_squadre
+    global rose_squadre, crediti_squadre, giocatori_tagliati, giocatori_liberi
     file_excel = "listone_fantacalcio.xlsx"
     
     if not os.path.exists(file_excel):
@@ -50,10 +60,14 @@ def carica_dati_da_excel():
         return
 
     try:
-        df = pd.read_excel(file_excel)
-        print(f"📊 Lettura file {file_excel} in corso...")
+        xls = pd.ExcelFile(file_excel)
+        fogli_disponibili = xls.sheet_names
+
+        # 1. LETTURA DEL FOGLIO DELLE ROSE E DEI LIBERI
+        nome_foglio_rosa = 'Rosa' if 'Rosa' in fogli_disponibili else fogli_disponibili[0]
+        df_rosa = pd.read_excel(xls, sheet_name=nome_foglio_rosa)
         
-        for _, row in df.iterrows():
+        for _, row in df_rosa.iterrows():
             nome = str(row.get("NomeGiocatore", "")).strip()
             ruolo = str(row.get("Ruolo", "")).strip().upper()
             squadra = str(row.get("Squadra", "")).strip()
@@ -67,11 +81,7 @@ def carica_dati_da_excel():
             except ValueError:
                 prezzo = 0
 
-            # Se la squadra è specificata nel file, la carichiamo nella rosa iniziale
             if squadra and squadra.lower() != "nan" and squadra != "":
-                if not squadra.startswith("@"):
-                    squadra = "@" + squadra
-                
                 if squadra not in rose_squadre:
                     rose_squadre[squadra] = []
                 rose_squadre[squadra].append({
@@ -79,8 +89,54 @@ def carica_dati_da_excel():
                     "ruolo": ruolo,
                     "prezzo": prezzo
                 })
+            else:
+                giocatori_liberi.append({
+                    "giocatore": nome,
+                    "ruolo": ruolo,
+                    "prezzo": prezzo
+                })
+
+        print(f"✅ Rose e giocatori liberi caricati correttamente!")
+
+        # 2. LETTURA DEL FOGLIO DEI CREDITI
+        if 'Crediti' in fogli_disponibili:
+            df_crediti = pd.read_excel(xls, sheet_name='Crediti')
+            for _, row in df_crediti.iterrows():
+                squadra = str(row.get("Squadra", "")).strip()
+                crediti = row.get("Crediti", 0)
                 
-        print("✅ Rose iniziali caricate con successo da Excel!")
+                if not squadra or squadra.lower() == "nan":
+                    continue
+                try:
+                    crediti = int(crediti)
+                except ValueError:
+                    crediti = 0
+                
+                crediti_squadre[squadra] = crediti
+            print("✅ Crediti iniziali caricati!")
+
+        # 3. LETTURA DEL FOGLIO DEI TAGLI
+        if 'Tagli' in fogli_disponibili:
+            df_tagli = pd.read_excel(xls, sheet_name='Tagli')
+            for _, row in df_tagli.iterrows():
+                nome = str(row.get("NomeGiocatore", "")).strip()
+                squadra = str(row.get("Squadra", "")).strip()
+                prezzo = row.get("PrezzoTaglio", 0)
+                
+                if not nome or nome.lower() == "nan":
+                    continue
+                try:
+                    prezzo = int(prezzo)
+                except ValueError:
+                    prezzo = 0
+
+                giocatore_key = nome.lower()
+                giocatori_tagliati[giocatore_key] = {
+                    "squadra": squadra,
+                    "prezzo": prezzo
+                }
+            print("✅ Giocatori tagliati caricati!")
+
     except Exception as e:
         print(f"❌ Errore durante la lettura del file Excel: {e}")
 
@@ -109,10 +165,10 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
     if giocatore_key in aste:
         info = aste[giocatore_key]
         nome = info["nome_originale"]
-        vincitore = info["ultimo_offrente"]
+        vincitore = info["squadra_offerente"]
         offerta = info["offerta_attuale"]
 
-        # Registra nello storico e nella rosa della squadra vincitrice
+        # Registra nello storico
         storico_acquisti.append({
             "giocatore": nome,
             "vincitore": vincitore,
@@ -121,11 +177,23 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
 
         if vincitore not in rose_squadre:
             rose_squadre[vincitore] = []
+        
+        # Recupera il ruolo del giocatore
+        ruolo_giocatore = "N/D"
+        for lib in giocatori_liberi:
+            if lib["giocatore"].lower() == giocatore_key:
+                ruolo_giocatore = lib["ruolo"]
+                break
+
         rose_squadre[vincitore].append({
             "giocatore": nome,
-            "ruolo": "N/D",
+            "ruolo": ruolo_giocatore,
             "prezzo": offerta
         })
+
+        # Rimuove dai liberi
+        global giocatori_liberi
+        giocatori_liberi = [l for l in giocatori_liberi if l["giocatore"].lower() != giocatore_key]
 
         # Scala crediti residui
         if vincitore in crediti_squadre:
@@ -154,11 +222,7 @@ async def set_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if len(context.args) < 4:
-        await update.message.reply_text(
-            "⚠️ **Formato Errato!** Usa:\n"
-            "`/setmercato DataInizio OraInizio DataFine OraFine`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("⚠️ Usa: `/setmercato DataInizio OraInizio DataFine OraFine`", parse_mode="Markdown")
         return
 
     str_inizio = f"{context.args[0]} {context.args[1]}"
@@ -187,34 +251,7 @@ async def blocca_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mercato_bloccato = not mercato_bloccato
     stato_testo = "🛑 **BLOCCATO**" if mercato_bloccato else "🟢 **APERTO E ATTIVO**"
     
-    await update.message.reply_text(
-        f"🔒 **STATO MERCATO AGGIORNATO:** {stato_testo}",
-        parse_mode="Markdown"
-    )
-
-async def imposta_crediti(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await verifica_admin(update, context):
-        return
-
-    if update.effective_chat.type != "private":
-        try:
-            await update.message.delete()
-        except Exception:
-            pass
-
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text("⚠️ Usa: `/crediti @Utente Crediti`", parse_mode="Markdown")
-        return
-
-    try:
-        utente = context.args[0]
-        crediti = int(context.args[1])
-    except ValueError:
-        await update.message.reply_text("⚠️ I crediti devono essere un numero intero.", parse_mode="Markdown")
-        return
-
-    crediti_squadre[utente] = crediti
-    await update.message.reply_text(f"💰 **CREDITI AGGIORNATI!**\n👤 {utente}: **{crediti}** crediti", parse_mode="Markdown")
+    await update.message.reply_text(f"🔒 **STATO MERCATO AGGIORNATO:** {stato_testo}", parse_mode="Markdown")
 
 async def mostra_crediti(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not crediti_squadre:
@@ -222,34 +259,75 @@ async def mostra_crediti(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     messaggio = "💰 **BILANCIO CREDITI SQUADRE:**\n\n"
-    for utente, crediti in crediti_squadre.items():
-        messaggio += f"• {utente}: **{crediti}** crediti\n"
+    for squadra, crediti in crediti_squadre.items():
+        messaggio += f"• {squadra}: **{crediti}** crediti\n"
 
     await update.message.reply_text(messaggio, parse_mode="Markdown")
 
-async def mostra_rosa(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("⚠️ Specifica la squadra. Esempio: `/rosa @mario`", parse_mode="Markdown")
+# --- GESTIONE ROSE E LIBERI ---
+async def seleziona_rosa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tutte_squadre = list(set(list(rose_squadre.keys()) + list(crediti_squadre.keys())))
+    if not tutte_squadre:
+        await update.message.reply_text("ℹ️ Nessuna squadra registrata al momento.", parse_mode="Markdown")
         return
 
-    squadra = context.args[0]
-    if not squadra.startswith("@"):
-        squadra = "@" + squadra
+    keyboard = [[InlineKeyboardButton(s, callback_data=f"rosa_{s}")] for s in sorted(tutte_squadre)]
+    await update.message.reply_text("📋 **Seleziona la squadra di cui vuoi visualizzare la rosa:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def bottone_rosa_cliccato(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    squadra = query.data.replace("rosa_", "")
 
     if squadra not in rose_squadre or not rose_squadre[squadra]:
-        await update.message.reply_text(f"ℹ️ La rosa di {squadra} è attualmente vuota.", parse_mode="Markdown")
+        await query.edit_message_text(text=f"ℹ️ La rosa della squadra **{squadra}** è vuota.", parse_mode="Markdown")
         return
 
+    rosa = rose_squadre[squadra]
+    conteggio = {"P": 0, "D": 0, "C": 0, "A": 0}
     messaggio = f"📋 **ROSA SQUADRA: {squadra}**\n\n"
     tot_speso = 0
-    for p in rose_squadre[squadra]:
-        messaggio += f"• [{p.get('ruolo', 'N/D')}] **{p['giocatore']}** ({p['prezzo']} crediti)\n"
+    for p in rosa:
+        r = p.get('ruolo', 'N/D')
+        if r in conteggio: conteggio[r] += 1
+        messaggio += f"• [{r}] **{p['giocatore']}** ({p['prezzo']} crediti)\n"
         tot_speso += p['prezzo']
 
-    messaggio += f"\n💎 **Totale giocatori in rosa:** {len(rose_squadre[squadra])}\n"
+    messaggio += f"\n📊 **Composizione:** P: {conteggio['P']}/3 | D: {conteggio['D']}/8 | C: {conteggio['C']}/8 | A: {conteggio['A']}/6\n"
     messaggio += f"💸 **Spesa totale:** {tot_speso} crediti"
+    await query.edit_message_text(text=messaggio, parse_mode="Markdown")
 
-    await update.message.reply_text(messaggio, parse_mode="Markdown")
+async def seleziona_liberi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not giocatori_liberi:
+        await update.message.reply_text("ℹ️ Non ci sono giocatori liberi al momento.", parse_mode="Markdown")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("🟢 Portieri (P)", callback_data="liberi_P")],
+        [InlineKeyboardButton("🔵 Difensori (D)", callback_data="liberi_D")],
+        [InlineKeyboardButton("🟡 Centrocampisti (C)", callback_data="liberi_C")],
+        [InlineKeyboardButton("🔴 Attaccanti (A)", callback_data="liberi_A")]
+    ]
+    await update.message.reply_text("🔍 **Seleziona il ruolo dei giocatori liberi:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def bottone_liberi_cliccato(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    ruolo_scelto = query.data.replace("liberi_", "").upper()
+    filtrati = sorted([g for g in giocatori_liberi if g["ruolo"] == ruolo_scelto], key=lambda x: x["giocatore"])
+
+    if not filtrati:
+        await query.edit_message_text(text=f"ℹ️ Nessun giocatore libero trovato per il ruolo **{ruolo_scelto}**.", parse_mode="Markdown")
+        return
+
+    messaggio = f"🟢 **GIOCATORI LIBERI - RUOLO: {ruolo_scelto}**\n\n"
+    for p in filtrati:
+        messaggio += f"• **{p['giocatore']}** (Quotazione: {p['prezzo']})\n"
+
+    if len(messaggio) > 4000:
+        messaggio = messaggio[:3950] + "\n\n... (elenco troncato)"
+
+    await query.edit_message_text(text=messaggio, parse_mode="Markdown")
 
 async def storico_aste(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not storico_acquisti:
@@ -265,40 +343,60 @@ async def storico_aste(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     testo_guida = (
         "📖 **GUIDA E REGOLAMENTO ASTE**\n\n"
-        "⚙️ **Comandi Admin:**\n"
-        "`/bloccamercato` - Blocca/Sblocca aste\n"
-        "`/crediti @Utente Valore` - Imposta budget\n\n"
-        "🔍 **Consultazione:**\n"
+        "⚙️ **Regole Fondamentali:**\n"
+        "1️⃣ **Solo Liberi:** Si può offrire esclusivamente per i giocatori liberi.\n"
+        "2️⃣ **Nome Esatto:** Il nome del giocatore deve essere inserito **esattamente** come scritto nell'elenco ufficiale.\n"
+        "3️⃣ **Limiti Rosa:** È obbligatorio mantenere i seguenti limiti per reparto:\n"
+        "   •  P: max 3 | D: max 8 | C: max 8 | A: max 6\n"
+        "4️⃣ **Regola Tagli:** Se si offre per un giocatore presente nel foglio 'Tagli', l'offerta minima deve essere pari al valore del taglio stabilito.\n"
+        "5️⃣ **Crediti e Aste Simultanee:** La somma di quanto offerto nelle tue aste simultanee attive non può superare i tuoi **crediti residui** in portafoglio.\n\n"
+        "🔍 **Comandi di Consultazione:**\n"
         "`/portafoglio` - Crediti residui\n"
-        "`/rosa @Utente` - Mostra la rosa di una squadra\n"
+        "`/rosa` - Visualizza le rose delle squadre\n"
+        "`/liberi` - Elenca i giocatori svincolati per ruolo\n"
         "`/assegnati` - Storico acquisti\n"
-        "`/stato` - Aste attive in corso\n\n"
+        "`/stato` - Aste attive\n\n"
         f"🟢 **Aste e Rilanci:**\n"
-        "`/asta NomeGiocatore Quota` (Max {MAX_ASTE_CONTEMPORANEE} simultanee per squadra)\n"
+        "`/asta NomeGiocatore Quota` (Max {MAX_ASTE_CONTEMPORANEE} simultanee)\n"
         "`/rilancio NomeGiocatore NuovaOfferta`"
     )
     await update.message.reply_text(testo_guida, parse_mode="Markdown")
 
 async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
-        try:
-            await update.message.delete()
-        except Exception:
-            pass
+        try: await update.message.delete()
+        except: pass
 
     if mercato_bloccato:
         await update.message.reply_text("🛑 **Il mercato è attualmente bloccato dagli amministratori!**")
         return
 
-    utente = get_nome_utente(update.effective_user)
+    # Per identificare la squadra dell'utente, l'utente deve specificarla o essere mappato. 
+    # Qui usiamo il nome dell'utente o chiediamo di specificare la squadra se necessario.
+    # Assumiamo temporaneamente che l'utente scriva la sua squadra o usiamo il nome Telegram.
+    utente = get_nome_squadra(update.effective_user.first_name)
+    if update.effective_user.username:
+        utente = f"@{update.effective_user.username}"
 
-    aste_attive_utente = sum(1 for info in aste.values() if info["creatore"] == utente)
+    # Nota: se gestisci le squadre con nomi personalizzati, assicurati che l'utente corrisponda o che abbia crediti associati.
+    # Verifichiamo tra le squadre registrate in crediti_squadre
+    squadra_utente = None
+    for s in crediti_squadre.keys():
+        if s.lower() in utente.lower() or utente.lower() in s.lower():
+            squadra_utente = s
+            break
+    if not squadra_utente:
+        # Se non trova corrispondenza esatta, prendiamo il primo argomento o l'utente stesso
+        squadra_utente = utente
+
+    # Controllo limite aste simultanee
+    aste_attive_utente = sum(1 for info in aste.values() if info["squadra_offerente"] == squadra_utente)
     if aste_attive_utente >= MAX_ASTE_CONTEMPORANEE:
         await update.message.reply_text(f"⚠️ Hai già {MAX_ASTE_CONTEMPORANEE} aste attive in simultanea.")
         return
 
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("⚠️ Usa: `/asta NomeGiocatore Quota`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Usa: `/asta NomeGiocatore Quota`\n*(Ricorda di inserire il nome esatto come da elenco!)*", parse_mode="Markdown")
         return
 
     try:
@@ -314,6 +412,63 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ C'è già un'asta in corso per **{nome_giocatore}**!")
         return
 
+    # Controllo 1: Il giocatore esiste tra i liberi?
+    giocatore_trovato = None
+    for lib in giocatori_liberi:
+        if lib["giocatore"].lower() == giocatore_key:
+            giocatore_trovato = lib
+            break
+
+    if not giocatore_trovato:
+        await update.message.reply_text(
+            f"❌ **Errore:** Il giocatore **\"{nome_giocatore}\"** non è disponibile (o è già di proprietà di qualcuno, oppure il nome non corrisponde esattamente all'elenco)."
+        )
+        return
+
+    ruolo = giocatore_trovato["ruolo"]
+
+    # Controllo 2: Il reparto è già pieno?
+    rosa_attuale = rose_squadre.get(squadra_utente, [])
+    conti_reparto = sum(1 for p in rosa_attuale if p.get("ruolo") == ruolo)
+    
+    # Aggiungiamo anche i giocatori attualmente contesi e vinti in altre aste attive dalla stessa squadra
+    for k, info in aste.items():
+        if info["squadra_offerente"] == squadra_utente:
+            for lib in giocatori_liberi:
+                if lib["giocatore"].lower() == k and lib["ruolo"] == ruolo:
+                    conti_reparto += 1
+
+    limite_max = LIMITI_ROSA.get(ruolo, 99)
+    if conti_reparto >= limite_max:
+        await update.message.reply_text(
+            f"❌ **Rosa Piena:** Hai già raggiunto il limite massimo di {limite_max} giocatori per il ruolo **{ruolo}** ({squadra_utente})."
+        )
+        return
+
+    # Controllo 3: Crediti residui e somma aste simultanee
+    crediti_disponibili = crediti_squadre.get(squadra_utente, 500) # Default se non trovato
+    impegno_altre_aste = sum(info["offerta_attuale"] for k, info in aste.items() if info["squadra_offerente"] == squadra_utente)
+    
+    if (impegno_altre_aste + quota_massima) > crediti_disponibili:
+        await update.message.reply_text(
+            f"❌ **Crediti Insufficienti:** Hai {crediti_disponibili} crediti residui e {impegno_altre_aste} impegnati in altre aste. La somma supera il tuo budget!"
+        )
+        return
+
+    # Controllo 4: Regola Tagli
+    offerta_pubblica = 1
+    if giocatore_key in giocatori_tagliati:
+        prezzo_minimo = giocatori_tagliati[giocatore_key]["prezzo"]
+        if quota_massima < prezzo_minimo:
+            await update.message.reply_text(
+                f"❌ **Regola Tagli:** Questo giocatore è stato tagliato (valore minimo: {prezzo_minimo}). La tua offerta iniziale deve essere di almeno **{prezzo_minimo}** crediti."
+            )
+            return
+        offerta_pubblica = prezzo_minimo
+
+    if quota_massima < offerta_pubblica:
+        offerta_pubblica = quota_massima
+
     ora_attuale = datetime.now()
     scadenza = ora_attuale + timedelta(hours=TIMER_ASTA_ORE)
 
@@ -324,34 +479,29 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name=giocatore_key
     )
 
-    offerta_pubblica = 1
-    if quota_massima < offerta_pubblica:
-        offerta_pubblica = quota_massima
-
     aste[giocatore_key] = {
-        "nome_originale": nome_giocatore,
+        "nome_originale": giocatore_trovato["giocatore"],
         "offerta_attuale": offerta_pubblica,
-        "ultimo_offrente": utente,
-        "creatore": utente,
+        "ultimo_offrente": squadratura_nome := squadra_utente,
+        "squadra_offerente": squadra_utente,
+        "creatore": squadra_utente,
         "scadenza": scadenza,
         "job": job,
-        "offerte_massime": {utente: quota_massima}
+        "offerte_massime": {squadra_utente: quota_massima}
     }
 
     await update.message.reply_text(
         f"📣 **ASTA APERTA!**\n\n"
-        f"⚽ **Giocatore:** {nome_giocatore}\n"
-        f"💰 **Offerta attuale:** {offerta_pubblica} credito\n"
-        f"👤 **In vantaggio:** {utente}\n"
+        f"⚽ **Giocatore:** {giocatore_trovato['giocatore']} [{ruolo}]\n"
+        f"💰 **Offerta attuale:** {offerta_pubblica} crediti\n"
+        f"🏰 **Squadra:** {squadra_utente}\n"
         f"⏳ **Scadenza:** 24 ore."
     )
 
 async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
-        try:
-            await update.message.delete()
-        except Exception:
-            pass
+        try: await update.message.delete()
+        except: pass
 
     if mercato_bloccato:
         await update.message.reply_text("🛑 **Il mercato è bloccato!**")
@@ -374,10 +524,27 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Nessuna asta attiva per **{nome_giocatore}**.")
         return
 
-    info_asta = aste[giocatore_key]
-    utente = get_nome_utente(update.effective_user)
+    utente = get_nome_squadra(update.effective_user.first_name)
+    if update.effective_user.username:
+        utente = f"@{update.effective_user.username}"
 
-    info_asta["offerte_massime"][utente] = max(info_asta["offerte_massime"].get(utente, 0), nuova_offerta)
+    squadra_utente = None
+    for s in crediti_squadre.keys():
+        if s.lower() in utente.lower() or utente.lower() in s.lower():
+            squadra_utente = s
+            break
+    if not squadra_utente:
+        squadra_utente = utente
+
+    # Controllo regola tagli
+    if giocatore_key in giocatori_tagliati:
+        prezzo_minimo = giocatori_tagliati[giocatore_key]["prezzo"]
+        if nuova_offerta < prezzo_minimo:
+            await update.message.reply_text(f"❌ Questo giocatore ha un prezzo minimo di taglio pari a **{prezzo_minimo}** crediti.")
+            return
+
+    info_asta = aste[giocatore_key]
+    info_asta["offerte_massime"][squadra_utente] = max(info_asta["offerte_massime"].get(squadra_utente, 0), nuova_offerta)
 
     miglior_offerente = max(info_asta["offerte_massime"], key=info_asta["offerte_massime"].get)
     massimo_disponibile = info_asta["offerte_massime"][miglior_offerente]
@@ -389,7 +556,7 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         offerta_calcolata = min(nuova_offerta, massimo_disponibile)
 
-    if offerta_calcolata <= info_asta["offerta_attuale"] and utente != miglior_offerente:
+    if offerta_calcolata <= info_asta["offerta_attuale"] and squadra_utente != miglior_offerente:
         await update.message.reply_text("⚠️ Offerta superata dal rilancio automatico!")
         return
 
@@ -403,6 +570,7 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     info_asta["offerta_attuale"] = offerta_calcolata
     info_asta["ultimo_offrente"] = miglior_offerente
+    info_asta["squadra_offerente"] = miglior_offerente
     info_asta["scadenza"] = datetime.now() + timedelta(hours=TIMER_ASTA_ORE)
     info_asta["job"] = nuovo_job
 
@@ -410,7 +578,7 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔥 **RILANCIO AUTOMATICO!**\n\n"
         f"⚽ **Giocatore:** {info_asta['nome_originale']}\n"
         f"💰 **Offerta:** {offerta_calcolata} crediti\n"
-        f"👤 **In vantaggio:** {miglior_offerente}"
+        f"🏰 **In vantaggio:** {miglior_offerente}"
     )
 
 async def stato_aste(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -430,7 +598,7 @@ async def stato_aste(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             messaggio += (
                 f"⚽ **{info['nome_originale']}** (Aperta da: {info['creatore']})\n"
-                f"  • Offerta: {info['offerta_attuale']} crediti (In vantaggio: {info['ultimo_offrente']})\n"
+                f"  • Offerta: {info['offerta_attuale']} crediti (In vantaggio: {info['squadra_offerente']})\n"
                 f"  • Tempo rimasto: ~{ore}h {minuti}m\n\n"
             )
 
@@ -443,7 +611,6 @@ def main():
         print("ERRORE: Variabile TELEGRAM_TOKEN non trovata.")
         return
 
-    # Carica le rose e i dati iniziali dal file Excel all'avvio del bot
     carica_dati_da_excel()
 
     app = Application.builder().token(token).build()
@@ -453,9 +620,13 @@ def main():
     app.add_handler(CommandHandler(["setmercato"], set_mercato))
     app.add_handler(CommandHandler(["bloccamercato", "stopmercato"], blocca_mercato))
     
-    app.add_handler(CommandHandler(["crediti"], imposta_crediti))
     app.add_handler(CommandHandler(["portafoglio", "budget"], mostra_crediti))
-    app.add_handler(CommandHandler(["rosa"], mostra_rosa))
+    
+    app.add_handler(CommandHandler(["rosa"], seleziona_rosa))
+    app.add_handler(CallbackQueryHandler(bottone_rosa_cliccato, pattern="^rosa_"))
+    
+    app.add_handler(CommandHandler(["liberi"], seleziona_liberi))
+    app.add_handler(CallbackQueryHandler(bottone_liberi_cliccato, pattern="^liberi_"))
     
     app.add_handler(CommandHandler(["asta", "a"], nuova_asta))
     app.add_handler(CommandHandler(["rilancio", "ril"], rilancio))
