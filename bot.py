@@ -81,7 +81,6 @@ def carica_dati_da_excel():
             except ValueError:
                 prezzo = 0
 
-            # Considera libero se la colonna squadra è vuota, NaN, o 'svincolato'
             is_libero = not squadra or squadra.lower() in ["nan", "none", "svincolato", "libero", ""]
 
             if not is_libero:
@@ -100,7 +99,6 @@ def carica_dati_da_excel():
                 })
 
         print(f"✅ Caricati {len(giocatori_liberi)} giocatori liberi e {sum(len(v) for v in rose_squadre.values())} giocatori in rosa.")
-        print(f"🏰 Squadre trovate nelle rose: {list(rose_squadre.keys())}")
 
         # 2. LETTURA DEL FOGLIO DEI CREDITI (Squadra, Crediti rimasti)
         nome_foglio_crediti = next((f for f in fogli_disponibili if f.lower() == 'crediti'), None)
@@ -147,6 +145,27 @@ def carica_dati_da_excel():
 
     except Exception as e:
         print(f"❌ Errore critico durante la lettura del file Excel: {e}")
+
+# --- CONTROLLI AGGIUNTIVI SULLA ROSA E SUI REPARTI ---
+def conta_giocatori_reparto(squadra, ruolo):
+    # Conta quanti giocatori ha già la squadra in quel ruolo (in rosa + in aste attive vinte provvisoriamente)
+    rosa = rose_squadre.get(squadra, [])
+    conteggio = sum(1 for p in rosa if p.get("ruolo") == ruolo)
+    
+    for k, info in aste.items():
+        if info["squadra_offerente"] == squadra:
+            for lib in giocatori_liberi:
+                if lib["giocatore"].lower() == k and lib["ruolo"] == ruolo:
+                    conteggio += 1
+    return conteggio
+
+def verifica_regole_mercato_24h():
+    if data_fine_mercato:
+        rimanente = data_fine_mercato - datetime.now()
+        # Se mancano meno di 24 ore alla chiusura, il mercato rilanci/aste è bloccato
+        if rimanente.total_seconds() > 0 and rimanente.total_seconds() <= 24 * 3600:
+            return True
+    return False
 
 # --- CONTROLLO AMMINISTRATORE ---
 async def verifica_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -348,12 +367,11 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     testo_guida = (
         "📖 **GUIDA E REGOLAMENTO ASTE**\n\n"
         "⚙️ **Regole Fondamentali:**\n"
-        "1️⃣ **Solo Liberi:** Si può offrire esclusivamente per i giocatori liberi.\n"
-        "2️⃣ **Nome Esatto:** Il nome del giocatore deve essere inserito **esattamente** come scritto nella colonna 'Calciatore' dell'elenco ufficiale.\n"
-        "3️⃣ **Limiti Rosa:** È obbligatorio mantenere i seguenti limiti per reparto:\n"
-        "   •  P: max 3 | D: max 8 | C: max 8 | A: max 6\n"
+        "1️⃣ **Solo Liberi & Slot Disponibili:** Si può offrire solo per giocatori liberi e se si ha spazio nel reparto (P:3, D:8, C:8, A:6). Non puoi rilanciare se il reparto è pieno.\n"
+        "2️⃣ **Nome Esatto:** Il nome del giocatore deve essere inserito **esattamente** come scritto nella colonna 'Calciatore'.\n"
+        "3️⃣ **Budget e Aste Simultanee:** Massimo 2 aste in contemporanea per squadra. La somma offerta non deve superare i crediti residui, lasciando almeno 1 credito per ogni slot vuoto rimanente nella rosa.\n"
         "4️⃣ **Regola Tagli:** Se si offre per un giocatore presente nel foglio 'Tagli', l'offerta minima deve essere pari al valore del taglio stabilito.\n"
-        "5️⃣ **Crediti e Aste Simultanee:** La somma di quanto offerto nelle tue aste simultanee attive non può superare i tuoi **crediti residui** in portafoglio.\n\n"
+        "5️⃣ **Blocco Ultime 24 Ore:** Non è possibile aprire aste o fare rilanci nelle ultime 24 ore prima della chiusura ufficiale del mercato.\n\n"
         "🔍 **Comandi di Consultazione:**\n"
         "`/portafoglio` - Crediti residui\n"
         "`/rosa` - Visualizza le rose delle squadre\n"
@@ -373,6 +391,10 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if mercato_bloccato:
         await update.message.reply_text("🛑 **Il mercato è attualmente bloccato dagli amministratori!**")
+        return
+
+    if verifica_regole_mercato_24h():
+        await update.message.reply_text("⏳ **Mercato quasi chiuso:** Non è possibile aprire nuove aste nelle ultime 24 ore prima della chiusura!")
         return
 
     utente = get_nome_squadra(update.effective_user.first_name)
@@ -423,15 +445,8 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ruolo = giocatore_trovato["ruolo"]
 
-    rosa_attuale = rose_squadre.get(squadra_utente, [])
-    conti_reparto = sum(1 for p in rosa_attuale if p.get("ruolo") == ruolo)
-    
-    for k, info in aste.items():
-        if info["squadra_offerente"] == squadra_utente:
-            for lib in giocatori_liberi:
-                if lib["giocatore"].lower() == k and lib["ruolo"] == ruolo:
-                    conti_reparto += 1
-
+    # Controllo slot reparto disponibile
+    conti_reparto = conta_giocatori_reparto(squadra_utente, ruolo)
     limite_max = LIMITI_ROSA.get(ruolo, 99)
     if conti_reparto >= limite_max:
         await update.message.reply_text(
@@ -442,9 +457,15 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     crediti_disponibili = crediti_squadre.get(squadra_utente, 500)
     impegno_altre_aste = sum(info["offerta_attuale"] for k, info in aste.items() if info["squadra_offerente"] == squadra_utente)
     
-    if (impegno_altre_aste + quota_massima) > crediti_disponibili:
+    # Calcolo slot totali ancora da coprire per evitare di prosciugare tutti i crediti
+    totali_attuali = sum(conta_giocatori_reparto(squadra_utente, r) for r in ["P", "D", "C", "A"])
+    totali_massimi = sum(LIMITI_ROSA.values())
+    slot_rimanenti = totali_massimi - totali_attuali
+    
+    # Deve lasciare almeno 1 credito per ogni slot rimanente
+    if (impegno_altre_aste + quota_massima + (slot_rimanenti - 1)) > crediti_disponibili:
         await update.message.reply_text(
-            f"❌ **Crediti Insufficienti:** Hai {crediti_disponibili} crediti residui e {impegno_altre_aste} impegnati in altre aste. La somma supera il tuo budget!"
+            f"❌ **Budget Insufficienti o Rischio Prosciugamento:** Devi lasciare almeno 1 credito per ciascuno dei {slot_rimanenti} slot rimanenti nella tua rosa!"
         )
         return
 
@@ -499,6 +520,10 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🛑 **Il mercato è bloccato!**")
         return
 
+    if verifica_regole_mercato_24h():
+        await update.message.reply_text("⏳ **Mercato quasi chiuso:** Non è possibile effettuare rilanci nelle ultime 24 ore prima della chiusura!")
+        return
+
     if not context.args or len(context.args) < 2:
         await update.message.reply_text("⚠️ Usa: `/rilancio NomeCalciatore NuovaOfferta`", parse_mode="Markdown")
         return
@@ -527,6 +552,22 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
     if not squadra_utente:
         squadra_utente = utente
+
+    # Controllo rigoroso dello slot ruolo disponibile anche sui rilanci
+    # Trova il ruolo del giocatore in asta
+    ruolo_asta = None
+    for lib in giocatori_liberi:
+        if lib["giocatore"].lower() == giocatore_key:
+            ruolo_asta = lib["ruolo"]
+            break
+    
+    if ruolo_asta:
+        conti_reparto = conta_giocatori_reparto(squadra_utente, ruolo_asta)
+        limite_max = LIMITI_ROSA.get(ruolo_asta, 99)
+        # Se la squadra ha già il reparto pieno (escludendo l'asta corrente se già vi partecipava)
+        if conti_reparto > limite_max:
+            await update.message.reply_text(f"❌ Impossibile rilanciare: hai già esaurito gli slot per il ruolo **{ruolo_asta}**.")
+            return
 
     if giocatore_key in giocatori_tagliati:
         prezzo_minimo = giocatori_tagliati[giocatore_key]["prezzo"]
@@ -609,7 +650,7 @@ def main():
     app.add_handler(CommandHandler(["start"], start))
     app.add_handler(CommandHandler(["guida", "help"], guida))
     app.add_handler(CommandHandler(["setmercato"], set_mercato))
-    app.add_handler(CommandHandler(["bloccamercato", "stopmercato"], blocca_mercato))
+    app.add_handler(CommandHandler("bloccamercato", blocca_mercato))
     
     app.add_handler(CommandHandler(["portafoglio", "budget"], mostra_crediti))
     
