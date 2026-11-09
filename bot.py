@@ -25,6 +25,7 @@ server_thread.start()
 # --- 2. STATO MEMORIA E ASTE ---
 aste = {}                # { "giocatore_key": { ... } }
 crediti_squadre = {}     # { "NomeSquadra": crediti_rimanenti }
+mappa_utenti = {}        # { "identificativo_telegram": "NomeSquadra" }
 giocatori_tagliati = {}  # { "giocatore_key": { "squadra": "NomeSquadra", "prezzo": 15 } }
 storico_acquisti = []    # Lista di dizionari con i giocatori assegnati
 rose_squadre = {}        # { "NomeSquadra": [ {giocatore, ruolo, prezzo}, ... ] }
@@ -45,12 +46,25 @@ data_inizio_mercato = None
 data_fine_mercato = None
 mercato_bloccato = False
 
-def get_nome_squadra(user_fullname_or_username) -> str:
-    return user_fullname_or_username
+def get_nome_squadra(update: Update) -> str:
+    """Riconosce la squadra associata controllando prima lo Username e poi il Nome Telegram"""
+    user = update.effective_user
+    username = f"@{user.username}".lower() if user.username else ""
+    first_name = user.first_name.strip().lower() if user.first_name else ""
+    
+    # Cerca prima per username (es. @mario_rossi)
+    if username in mappa_utenti:
+        return mappa_utenti[username]
+    # Poi cerca per nome del profilo (es. mario)
+    if first_name in mappa_utenti:
+        return mappa_utenti[first_name]
+    
+    # Fallback se non trovato in tabella
+    return f"@{user.username}" if user.username else user.first_name
 
 # --- CARICAMENTO AUTOMATICO DA EXCEL ---
 def carica_dati_da_excel():
-    global rose_squadre, crediti_squadre, giocatori_tagliati, giocatori_liberi
+    global rose_squadre, crediti_squadre, mappa_utenti, giocatori_tagliati, giocatori_liberi
     file_excel = "Listone_Fantacalcio.xlsx"
     
     if not os.path.exists(file_excel):
@@ -100,13 +114,15 @@ def carica_dati_da_excel():
 
         print(f"✅ Caricati {len(giocatori_liberi)} giocatori liberi e {sum(len(v) for v in rose_squadre.values())} giocatori in rosa.")
 
-        # 2. LETTURA DEL FOGLIO DEI CREDITI (Squadra, Crediti rimasti)
+        # 2. LETTURA DEL FOGLIO DEI CREDITI (Squadra, Crediti rimasti, Nome Telegram, Username)
         nome_foglio_crediti = next((f for f in fogli_disponibili if f.lower() == 'crediti'), None)
         if nome_foglio_crediti:
             df_crediti = pd.read_excel(xls, sheet_name=nome_foglio_crediti)
             for _, row in df_crediti.iterrows():
                 squadra = str(row.get("Squadra", "")).strip()
                 crediti = row.get("Crediti rimasti", 0)
+                nome_telegram = str(row.get("Nome Telegram", "")).strip()
+                username = str(row.get("Username", "")).strip()
                 
                 if not squadra or squadra.lower() == "nan":
                     continue
@@ -116,7 +132,16 @@ def carica_dati_da_excel():
                     crediti = 0
                 
                 crediti_squadre[squadra] = crediti
-            print(f"✅ Caricati i crediti per {len(crediti_squadre)} squadre.")
+                
+                # Mappa il Nome Telegram se presente
+                if nome_telegram and nome_telegram.lower() != "nan":
+                    mappa_utenti[nome_telegram.lower()] = squadra
+                    
+                # Mappa lo Username se presente
+                if username and username.lower() != "nan":
+                    mappa_utenti[username.lower()] = squadra
+                    
+            print(f"✅ Caricati i crediti per {len(crediti_squadre)} squadre e mappati {len(mappa_utenti)} profili Telegram.")
         else:
             print("⚠️ Attenzione: Foglio 'Crediti' non trovato nel file Excel.")
 
@@ -148,7 +173,6 @@ def carica_dati_da_excel():
 
 # --- CONTROLLI AGGIUNTIVI SULLA ROSA E SUI REPARTI ---
 def conta_giocatori_reparto(squadra, ruolo):
-    # Conta quanti giocatori ha già la squadra in quel ruolo (in rosa + in aste attive vinte provvisoriamente)
     rosa = rose_squadre.get(squadra, [])
     conteggio = sum(1 for p in rosa if p.get("ruolo") == ruolo)
     
@@ -162,7 +186,6 @@ def conta_giocatori_reparto(squadra, ruolo):
 def verifica_regole_mercato_24h():
     if data_fine_mercato:
         rimanente = data_fine_mercato - datetime.now()
-        # Se mancano meno di 24 ore alla chiusura, il mercato rilanci/aste è bloccato
         if rimanente.total_seconds() > 0 and rimanente.total_seconds() <= 24 * 3600:
             return True
     return False
@@ -367,9 +390,9 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     testo_guida = (
         "📖 **GUIDA E REGOLAMENTO ASTE**\n\n"
         "⚙️ **Regole Fondamentali:**\n"
-        "1️⃣ **Solo Liberi & Slot Disponibili:** Si può offrire solo per giocatori liberi e se si ha spazio nel reparto (P:3, D:8, C:8, A:6). Non puoi rilanciare se il reparto è pieno.\n"
+        "1️⃣ **Solo Liberi & Slot Disponibili:** Si può offrire solo per giocatori liberi e se si ha spazio nel reparto (P:3, D:8, C:8, A:6).\n"
         "2️⃣ **Nome Esatto:** Il nome del giocatore deve essere inserito **esattamente** come scritto nella colonna 'Calciatore'.\n"
-        "3️⃣ **Budget e Aste Simultanee:** Massimo 2 aste in contemporanea per squadra. La somma offerta non deve superare i crediti residui, lasciando almeno 1 credito per ogni slot vuoto rimanente nella rosa.\n"
+        "3️⃣ **Budget e Aste Simultanee:** Massimo 2 aste in contemporanea. La somma offerta non deve superare i crediti residui, lasciando almeno 1 credito per ogni slot vuoto rimanente.\n"
         "4️⃣ **Regola Tagli:** Se si offre per un giocatore presente nel foglio 'Tagli', l'offerta minima deve essere pari al valore del taglio stabilito.\n"
         "5️⃣ **Blocco Ultime 24 Ore:** Non è possibile aprire aste o fare rilanci nelle ultime 24 ore prima della chiusura ufficiale del mercato.\n\n"
         "🔍 **Comandi di Consultazione:**\n"
@@ -397,17 +420,7 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⏳ **Mercato quasi chiuso:** Non è possibile aprire nuove aste nelle ultime 24 ore prima della chiusura!")
         return
 
-    utente = get_nome_squadra(update.effective_user.first_name)
-    if update.effective_user.username:
-        utente = f"@{update.effective_user.username}"
-
-    squadra_utente = None
-    for s in crediti_squadre.keys():
-        if s.lower() in utente.lower() or utente.lower() in s.lower():
-            squadra_utente = s
-            break
-    if not squadra_utente:
-        squadra_utente = utente
+    squadra_utente = get_nome_squadra(update)
 
     aste_attive_utente = sum(1 for info in aste.values() if info["squadra_offerente"] == squadra_utente)
     if aste_attive_utente >= MAX_ASTE_CONTEMPORANEE:
@@ -445,7 +458,6 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ruolo = giocatore_trovato["ruolo"]
 
-    # Controllo slot reparto disponibile
     conti_reparto = conta_giocatori_reparto(squadra_utente, ruolo)
     limite_max = LIMITI_ROSA.get(ruolo, 99)
     if conti_reparto >= limite_max:
@@ -457,13 +469,11 @@ async def nuova_asta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     crediti_disponibili = crediti_squadre.get(squadra_utente, 500)
     impegno_altre_aste = sum(info["offerta_attuale"] for k, info in aste.items() if info["squadra_offerente"] == squadra_utente)
     
-    # Calcolo slot totali ancora da coprire per evitare di prosciugare tutti i crediti
     totali_attuali = sum(conta_giocatori_reparto(squadra_utente, r) for r in ["P", "D", "C", "A"])
     totali_massimi = sum(LIMITI_ROSA.values())
     slot_rimanenti = totali_massimi - totali_attuali
     
-    # Deve lasciare almeno 1 credito per ogni slot rimanente
-    if (impegno_altre_aste + quota_massima + (slot_rimanenti - 1)) > crediti_disponibili:
+    if (impegno_altre_aste + quota_massima + max(0, slot_rimanenti - 1)) > crediti_disponibili:
         await update.message.reply_text(
             f"❌ **Budget Insufficienti o Rischio Prosciugamento:** Devi lasciare almeno 1 credito per ciascuno dei {slot_rimanenti} slot rimanenti nella tua rosa!"
         )
@@ -541,20 +551,8 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Nessuna asta attiva per **{nome_giocatore}**.")
         return
 
-    utente = get_nome_squadra(update.effective_user.first_name)
-    if update.effective_user.username:
-        utente = f"@{update.effective_user.username}"
+    squadra_utente = get_nome_squadra(update)
 
-    squadra_utente = None
-    for s in crediti_squadre.keys():
-        if s.lower() in utente.lower() or utente.lower() in s.lower():
-            squadra_utente = s
-            break
-    if not squadra_utente:
-        squadra_utente = utente
-
-    # Controllo rigoroso dello slot ruolo disponibile anche sui rilanci
-    # Trova il ruolo del giocatore in asta
     ruolo_asta = None
     for lib in giocatori_liberi:
         if lib["giocatore"].lower() == giocatore_key:
@@ -564,8 +562,7 @@ async def rilancio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ruolo_asta:
         conti_reparto = conta_giocatori_reparto(squadra_utente, ruolo_asta)
         limite_max = LIMITI_ROSA.get(ruolo_asta, 99)
-        # Se la squadra ha già il reparto pieno (escludendo l'asta corrente se già vi partecipava)
-        if conti_reparto > limite_max:
+        if conti_reparto > limite_max and aste[giocatore_key]["squadra_offerente"] != squadra_utente:
             await update.message.reply_text(f"❌ Impossibile rilanciare: hai già esaurito gli slot per il ruolo **{ruolo_asta}**.")
             return
 
