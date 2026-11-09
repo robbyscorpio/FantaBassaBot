@@ -266,6 +266,7 @@ async def guida_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 `/rosa` - Mostra i pulsanti con le squadre per visualizzare le rose.\n"
         "🔹 `/liberi` - Mostra i 4 ruoli (P, D, C, A) per filtrare i giocatori liberi.\n"
         "🔹 `/mercato` - Mostra date e stato attuale del mercato (foglio IMPOSTAZIONI).\n"
+        "🔹 `/annulla_asta` - Annulla l'asta attiva in corso (Admin).\n"
         "🔹 `/blocca_merc` - Blocca il mercato (Admin).\n"
         "🔹 `/sblocca_merc` - Sblocca il mercato (Admin).\n"
         "🔹 `/testasta` - Sincronizza Excel su GitHub (Admin)."
@@ -428,7 +429,7 @@ async def rilancia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  f"⏱️ Timer 24h azzerato e fatto ripartire!"
         )
     else:
-        nuova_offerta_corrente = nuvova_offerta_max + 1 if 'nuvova_offerta_max' in locals() else nuova_offerta_max + 1
+        nuova_offerta_corrente = nuova_offerta_max + 1
         if nuova_offerta_corrente > max_leader:
             nuova_offerta_corrente = max_leader
 
@@ -439,7 +440,7 @@ async def rilancia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=update.effective_chat.id,
             text=f"🤖 **RILANCIO AUTOMATICO DEL SISTEMA!**\n"
                  f"Per {giocatore}, la squadra **{leader_attuale}** copre il rilancio.\n"
-                 f"💰 Nuova offerta corrente visibile: **{nuova_offerta_corrente}** crediti\n"
+                 f"💰 Offerta corrente visibile: **{nuova_offerta_corrente}** crediti\n"
                  f"⏱️ Timer 24h rinnovato!"
         )
 
@@ -559,7 +560,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title = f"📋 **GIOCATORI LIBERI**" + (f" ({ruolo_cercato})" if ruolo_cercato else "")
             await query.edit_message_text(title + "\n" + "\n".join(liberi), parse_mode="Markdown")
 
-# --- COMANDI MERCATO E BLOCCO/SBLOCCO ---
+# --- COMANDI MERCATO E ANNULLAMENTO ASTA ---
 async def mercato_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data_inizio, data_fine, bloccato = leggi_impostazioni_mercato()
     stato = "🔴 BLOCCATO (Chiuso)" if bloccato else "🟢 APERTO"
@@ -570,6 +571,21 @@ async def mercato_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔒 **Stato:** {stato}"
     )
     await update.message.reply_text(testo, parse_mode="Markdown")
+
+async def annulla_asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global asta_attiva
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Non autorizzato.")
+        return
+    
+    if asta_attiva["giocatore"] is None:
+        await update.message.reply_text("⚠️ Nessuna asta attiva da annullare.")
+        return
+
+    giocatore_annullato = asta_attiva["giocatore"]
+    asta_attiva = {"giocatore": None, "offerta_corrente": 1, "squadra_leader": None, "offerte_massime": {}, "scadenza": None}
+    
+    await update.message.reply_text(f"❌ L'asta in corso per **{giocatore_annullato}** è stata annullata dall'amministratore.", parse_mode="Markdown")
 
 async def blocca_merc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -599,6 +615,7 @@ def main():
     app.add_handler(CommandHandler("rosa", rosa_command))
     app.add_handler(CommandHandler("liberi", liberi_command))
     app.add_handler(CommandHandler("mercato", mercato_command))
+    app.add_handler(CommandHandler("annulla_asta", annulla_asta_command))
     app.add_handler(CommandHandler("blocca_merc", blocca_merc_command))
     app.add_handler(CommandHandler("sblocca_merc", sblocca_merc_command))
     app.add_handler(CallbackQueryHandler(button_callback))
