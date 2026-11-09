@@ -68,6 +68,50 @@ def carica_su_github(file_path=FILE_NAME, percorso_nel_repo=FILE_NAME):
 
 COLORI_SQUADRE = ["FFC7CE", "C6EFCE", "FFEB9C", "BDD7EE", "F8CBAD", "D9E1F2", "E1D5E7", "FCE4D6"]
 
+# Limiti ufficiali degli slot per ruolo
+LIMITI_RUOLI = {
+    "P": 3,
+    "D": 8,
+    "C": 8,
+    "A": 6
+}
+
+def ottieni_ruolo_giocatore(nome_giocatore):
+    """Cerca il ruolo del giocatore nel foglio Rosa."""
+    if not os.path.exists(FILE_NAME):
+        return None
+    wb = openpyxl.load_workbook(FILE_NAME, data_only=True)
+    if "Rosa" not in wb.sheetnames:
+        return None
+    ws = wb["Rosa"]
+    for row in range(2, ws.max_row + 1):
+        if str(ws.cell(row=row, column=1).value or "").strip().lower() == str(nome_giocatore).strip().lower():
+            return str(ws.cell(row=row, column=2).value or "").strip().upper()
+    return None
+
+def ha_slot_disponibili(nome_squadra, ruolo):
+    """Verifica se la squadra ha ancora slot liberi per quel determinato ruolo (3P, 8D, 8C, 6A)."""
+    if not ruolo or ruolo not in LIMITI_RUOLI:
+        return True  # Se il ruolo non è specificato passiamo oltre
+
+    limite_max = LIMITI_RUOLI[ruolo]
+
+    if not os.path.exists(FILE_NAME):
+        return True
+    wb = openpyxl.load_workbook(FILE_NAME, data_only=True)
+    if "Rosa" not in wb.sheetnames:
+        return True
+    ws = wb["Rosa"]
+
+    count_occupati = 0
+    for row in range(2, ws.max_row + 1):
+        sq = str(ws.cell(row=row, column=3).value or "").strip()
+        r = str(ws.cell(row=row, column=2).value or "").strip().upper()
+        if sq.lower() == nome_squadra.lower() and r == ruolo:
+            count_occupati += 1
+
+    return count_occupati < limite_max
+
 def assegna_giocatore_excel(nome_squadra, nome_giocatore, prezzo):
     if not os.path.exists(FILE_NAME):
         return False, "File Excel non trovato."
@@ -260,8 +304,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def guida_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     testo = (
         "📖 **GUIDA AI COMANDI**\n\n"
-        "🔹 `/asta [Nome Giocatore] [OffertaMax]` - Avvia un'asta (riconosce la squadra in automatico)[cite: 1].\n"
-        "🔹 `/rilancia [Nome Giocatore] [OffertaMax]` - Invia un rilancio segreto su un'asta specifica[cite: 1].\n"
+        "🔹 `/asta [Nome Giocatore] [OffertaMax]` - Avvia un'asta (riconosce la squadra in automatico).\n"
+        "🔹 `/rilancia [Nome Giocatore] [OffertaMax]` - Invia un rilancio segreto su un'asta specifica.\n"
         "🔹 `/stato` - Mostra lo stato dell'asta corrente.\n"
         "🔹 `/rosa` - Mostra i pulsanti con le squadre per visualizzare le rose.\n"
         "🔹 `/liberi` - Mostra i 4 ruoli (P, D, C, A) per filtrare i giocatori liberi.\n"
@@ -319,11 +363,19 @@ async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Formato non valido. Usa: `/asta [Nome Giocatore] [Offerta Massima]`", parse_mode="Markdown")
         return
 
+    # 1. Controllo slot ruoli (3P, 8D, 8C, 6A)
+    ruolo_giocatore = ottieni_ruolo_giocatore(giocatore)
+    if ruolo_giocatore and not ha_slot_disponibili(squadra, ruolo_giocatore):
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ **{squadra}**: non hai slot liberi per il ruolo **{ruolo_giocatore}** (Limite: {LIMITI_RUOLI.get(ruolo_giocatore, 'N/D')}).")
+        return
+
+    # 2. Controllo crediti
     crediti_rimasti = ottieni_crediti_rimasti(squadra)
     if offerta_massima > (crediti_rimasti - 1):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Offerta non valida per {squadra}: supera il limite consentito (-1). Crediti attuali: {crediti_rimasti}.")
         return
 
+    # 3. Controllo max 2 aste in contemporanea
     if conta_aste_attive_squadra(squadra) >= 2:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {squadra} ha raggiunto il limite di 2 aste in contemporanea!")
         return
@@ -393,11 +445,19 @@ async def rilancia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     giocatore = asta_attiva["giocatore"]
 
+    # 1. Controllo slot ruoli (3P, 8D, 8C, 6A)
+    ruolo_giocatore = ottieni_ruolo_giocatore(giocatore)
+    if ruolo_giocatore and not ha_slot_disponibili(squadra, ruolo_giocatore):
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ **{squadra}**: non hai slot liberi per il ruolo **{ruolo_giocatore}** (Limite: {LIMITI_RUOLI.get(ruolo_giocatore, 'N/D')}).")
+        return
+
+    # 2. Controllo crediti
     crediti_rimasti = ottieni_crediti_rimasti(squadra)
     if nuova_offerta_max > (crediti_rimasti - 1):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {squadra}: Offerta superiore ai crediti disponibili (-1). Crediti attuali: {crediti_rimasti}.")
         return
 
+    # 3. Controllo max 2 aste
     if asta_attiva["squadra_leader"] != squadra and conta_aste_attive_squadra(squadra) >= 2:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {squadra} ha raggiunto il limite di 2 aste in contemporanea!")
         return
@@ -440,7 +500,7 @@ async def rilancia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=update.effective_chat.id,
             text=f"🤖 **RILANCIO AUTOMATICO DEL SISTEMA!**\n"
                  f"Per {giocatore}, la squadra **{leader_attuale}** copre il rilancio.\n"
-                 f"💰 Offerta corrente visibile: **{nuova_offerta_corrente}** crediti\n"
+                 f"💰 Nuova offerta corrente visibile: **{nuova_offerta_corrente}** crediti\n"
                  f"⏱️ Timer 24h rinnovato!"
         )
 
@@ -549,16 +609,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     continue
 
                 liberi.append(f"• {nome} ({ruolo}) - Quot: {quotazione}")
-                if len(liberi) >= 40:
-                    liberi.append("\n*(Lista troncata ai primi 40 risultati)*")
-                    break
 
         if not liberi:
             filter_text = f" per il ruolo {ruolo_cercato}" if ruolo_cercato else ""
             await query.edit_message_text(f"📭 Nessun giocatore libero trovato{filter_text}.")
         else:
             title = f"📋 **GIOCATORI LIBERI**" + (f" ({ruolo_cercato})" if ruolo_cercato else "")
-            await query.edit_message_text(title + "\n" + "\n".join(liberi), parse_mode="Markdown")
+            
+            # Dividiamo la lista in blocchi di massimo 40 elementi per non superare i limiti di Telegram
+            chunk_size = 40
+            chunks = [liberi[i:i + chunk_size] for i in range(0, len(liberi), chunk_size)]
+            
+            # Inviamo il primo blocco modificando la risposta al pulsante
+            prima_parte = f"{title} (Totale: {len(liberi)})\n" + "\n".join(chunks[0])
+            await query.edit_message_text(prima_parte, parse_mode="Markdown")
+            
+            # Inviamo eventuali blocchi successivi come nuovi messaggi di seguito
+            chat_id = query.message.chat_id
+            for chunk in chunks[1:]:
+                testo_chunk = "\n".join(chunk)
+                await context.bot.send_message(chat_id=chat_id, text=testo_chunk, parse_mode="Markdown")
 
 # --- COMANDI MERCATO E ANNULLAMENTO ASTA ---
 async def mercato_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
