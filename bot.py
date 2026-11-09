@@ -24,6 +24,11 @@ def run_server():
 server_thread = threading.Thread(target=run_server, daemon=True)
 server_thread.start()
 
+# --- CONFIGURAZIONE AMMINISTRATORE ---
+# Inserisci qui il tuo User ID numerico di Telegram (es. 123456789)
+# In questo modo il bot saprà a chi inviare il file Excel privato a ogni chiusura d'asta.
+ADMIN_TELEGRAM_ID = 592528299 
+
 # --- 2. STATO MEMORIA E ASTE ---
 aste = {}                # { "giocatore_key": { ... } }
 crediti_squadre = {}     # { "NomeSquadra": crediti_rimanenti }
@@ -59,37 +64,6 @@ def get_nome_squadra(update: Update) -> str:
         return mappa_utenti[first_name]
     
     return f"@{user.username}" if user.username else user.first_name
-
-# --- SALVATAGGIO IMPOSTAZIONI SU EXCEL ---
-def salva_impostazione_excel(chiave, valore):
-    file_excel = "Listone_Fantacalcio.xlsx"
-    try:
-        if os.path.exists(file_excel):
-            wb = openpyxl.load_workbook(file_excel)
-        else:
-            wb = openpyxl.Workbook()
-            wb.active.title = "Rosa"
-
-        if "Impostazioni" in wb.sheetnames:
-            ws = wb["Impostazioni"]
-        else:
-            ws = wb.create_sheet("Impostazioni")
-            ws.append(["Chiave", "Valore"])
-
-        # Cerca se la chiave esiste già per aggiornarla, altrimenti la aggiunge
-        trovato = False
-        for r in range(2, ws.max_row + 1):
-            if str(ws.cell(row=r, column=1).value).strip() == chiave:
-                ws.cell(row=r, column=2).value = str(valore)
-                trovato = True
-                break
-        
-        if not trovato:
-            ws.append([chiave, str(valore)])
-
-        wb.save(file_excel)
-    except Exception as e:
-        print(f"❌ Errore nel salvataggio dell'impostazione {chiave}: {e}")
 
 # --- MODIFICA AUTOMATICA DEL FILE EXCEL (ROSA) ---
 def aggiorna_excel_dopo_asta(nome_giocatore, squadra_vincitrice, prezzo_finale):
@@ -332,16 +306,33 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
         if vincitore in crediti_squadre:
             crediti_squadre[vincitore] = max(0, crediti_squadre[vincitore] - offerta)
 
+        # 1. Aggiorna il file Excel sul server con squadra, prezzo e colore verde
         aggiorna_excel_dopo_asta(nome, vincitore, offerta)
 
+        # 2. Invia l'annuncio pubblico nel gruppo dell'asta
         await context.bot.send_message(
             chat_id=chat_id,
             text=f"🔴 **ASTA CHIUSA!** 🔴\n\n"
                  f"⚽ **Giocatore:** {nome}\n"
                  f"🏆 **Aggiudicato a:** {vincitore}\n"
-                 f"💰 **Prezzo finale:** {offerta} crediti\n"
-                 f"📊 *File Excel aggiornato con successo!*"
+                 f"💰 **Prezzo finale:** {offerta} crediti"
         )
+
+        # 3. Invia automaticamente il file Excel aggiornato in privato all'amministratore
+        if ADMIN_TELEGRAM_ID != "TUA_CHAT_ID_QUI":
+            file_excel = "Listone_Fantacalcio.xlsx"
+            if os.path.exists(file_excel):
+                try:
+                    with open(file_excel, "rb") as f:
+                        await context.bot.send_document(
+                            chat_id=ADMIN_TELEGRAM_ID,
+                            document=f,
+                            filename="Listone_Fantacalcio_Aggiornato.xlsx",
+                            caption=f"📊 **Backup Automatico**\nAssegnato **{nome}** a **{vincitore}** per {offerta} crediti."
+                        )
+                except Exception as e:
+                    print(f"❌ Errore nell'invio automatico del file all'admin: {e}")
+
         del aste[giocatore_key]
 
 # --- 4. COMANDI DEL BOT ---
@@ -370,13 +361,8 @@ async def set_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data_fine_mercato = datetime.strptime(str_fine, "%d/%m/%Y %H:%M")
         mercato_bloccato = False
 
-        # Salva persistentemente su Excel
-        salva_impostazione_excel("data_inizio", str_inizio)
-        salva_impostazione_excel("data_fine", str_fine)
-        salva_impostazione_excel("mercato_bloccato", False)
-
         await update.message.reply_text(
-            f"📅 **PERIODO MERCATO IMPOSTATO, SALVATO E APERTO!**\n\n"
+            f"📅 **PERIODO MERCATO IMPOSTATO E APERTO!**\n\n"
             f"🟢 **Apertura:** {data_inizio_mercato.strftime('%d/%m/%Y alle %H:%M')}\n"
             f"🔴 **Chiusura:** {data_fine_mercato.strftime('%d/%m/%Y alle %H:%M')}",
             parse_mode="Markdown"
@@ -390,12 +376,9 @@ async def blocca_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     global mercato_bloccato
     mercato_bloccato = not mercato_bloccato
-    
-    # Salva lo stato aggiornato su Excel
-    salva_impostazione_excel("mercato_bloccato", mercato_bloccato)
-
     stato_testo = "🛑 **BLOCCATO**" if mercato_bloccato else "🟢 **APERTO E ATTIVO**"
-    await update.message.reply_text(f"🔒 **STATO MERCATO AGGIORNATO E SALVATO:** {stato_testo}", parse_mode="Markdown")
+    
+    await update.message.reply_text(f"🔒 **STATO MERCATO AGGIORNATO:** {stato_testo}", parse_mode="Markdown")
 
 async def mostra_crediti(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not crediti_squadre:
@@ -483,6 +466,26 @@ async def storico_aste(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(messaggio, parse_mode="Markdown")
 
+async def scarica_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("🔒 Per motivi di sicurezza, puoi richiedere il file Excel aggiornato solo in **chat privata** con il bot.")
+        return
+
+    file_excel = "Listone_Fantacalcio.xlsx"
+    if not os.path.exists(file_excel):
+        await update.message.reply_text("❌ Errore: Il file Excel non è momentaneamente disponibile sul server.")
+        return
+
+    try:
+        with open(file_excel, "rb") as f:
+            await update.message.document.send_document(
+                document=f,
+                filename="Listone_Fantacalcio_Aggiornato.xlsx",
+                caption="📊 Ecco il file Excel aggiornato con le rose, i crediti e le celle colorate!"
+            )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Errore durante l'invio del file: {e}")
+
 async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     testo_guida = (
         "📖 **GUIDA E REGOLAMENTO ASTE**\n\n"
@@ -497,7 +500,8 @@ async def guida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/rosa` - Visualizza le rose delle squadre\n"
         "`/liberi` - Elenca i giocatori svincolati per ruolo\n"
         "`/assegnati` - Storico acquisti\n"
-        "`/stato` - Aste attive\n\n"
+        "`/stato` - Aste attive\n"
+        "`/scaricaexcel` - Ricevi il file Excel aggiornato in privato\n\n"
         f"🟢 **Aste e Rilanci:**\n"
         "`/asta NomeCalciatore Quota` (Max {MAX_ASTE_CONTEMPORANEE} simultanee)\n"
         "`/rilancio NomeCalciatore NuovaOfferta`"
@@ -763,6 +767,7 @@ def main():
     
     app.add_handler(CommandHandler(["stato"], stato_aste))
     app.add_handler(CommandHandler(["assegnati", "storico"], storico_aste))
+    app.add_handler(CommandHandler(["scaricaexcel", "backup", "excel"], scarica_excel))
 
     print("Bot Fantacalcio Asta in esecuzione...")
     app.run_polling()
