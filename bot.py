@@ -1,6 +1,8 @@
 import os
 import logging
 import base64
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
@@ -17,6 +19,23 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GH_PAT = os.getenv("GH_PAT")
 GH_REPO = os.getenv("GH_REPO")  # Formato atteso: "robbyscorpio/FantaBassaBot"
 ADMIN_ID = 592528299
+
+# --- SERVER HTTP PER RENDERING (Evita lo stallo "In progress") ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"FantaBassaBot is active and live!")
+        
+    def log_message(self, format, *args):
+        # Disabilita i log HTTP continui per pulire la console
+        return
+
+def run_health_check_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+# -----------------------------------------------------------------
 
 def carica_su_github(file_path="Listone_Fantacalcio.xlsx", percorso_nel_repo="Listone_Fantacalcio.xlsx"):
     """
@@ -127,4 +146,9 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
+    # Avvia il server HTTP in background per soddisfare Render (Health Check)
+    server_thread = threading.Thread(target=run_health_check_server, daemon=True)
+    server_thread.start()
+    
+    # Avvia il bot principale
     main()
