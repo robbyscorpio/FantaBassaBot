@@ -22,13 +22,12 @@ GH_REPO = os.getenv("GH_REPO")
 ADMIN_ID = 592528299
 FILE_NAME = "Listone_Fantacalcio.xlsx"
 
-# STRUTTURA ASTA AVANZATA (Gestione offerte massime e rilanci automatici)
-# Tracciamo tutte le offerte massime inserite per l'asta attiva: {squadra: offerta_massima}
+# STATO GLOBALE DELL'ASTA ATTIVA
 asta_attiva = {
     "giocatore": None,
-    "offerta_corrente": 1,        # Prezzo visibile a tutti (parte sempre da 1)
-    "squadra_leader": None,       # Chi è in testa al momento
-    "offerte_massime": {},        # { "Nome Squadra": max_offerto }
+    "offerta_corrente": 1,
+    "squadra_leader": None,
+    "offerte_massime": {},
     "scadenza": None
 }
 
@@ -50,10 +49,12 @@ def run_health_check_server():
 
 def carica_su_github(file_path=FILE_NAME, percorso_nel_repo=FILE_NAME):
     if not GH_PAT or not GH_REPO:
+        logger.error("Credenziali GitHub mancanti (GH_PAT o GH_REPO).")
         return False
     url = f"https://api.github.com/repos/{GH_REPO}/contents/{percorso_nel_repo}"
     headers = {"Authorization": f"Bearer {GH_PAT}", "Accept": "application/vnd.github+json"}
     if not os.path.exists(file_path):
+        logger.error(f"Il file locale {file_path} non esiste.")
         return False
     with open(file_path, "rb") as f:
         content_bytes = f.read()
@@ -64,7 +65,12 @@ def carica_su_github(file_path=FILE_NAME, percorso_nel_repo=FILE_NAME):
     if sha:
         payload["sha"] = sha
     put_response = requests.put(url, headers=headers, json=payload)
-    return put_response.status_code in [200, 201]
+    if put_response.status_code in [200, 201]:
+        logger.info("File Excel sincronizzato con successo su GitHub!")
+        return True
+    else:
+        logger.error(f"Errore GitHub API ({put_response.status_code}): {put_response.text}")
+        return False
 
 COLORI_SQUADRE = ["FFC7CE", "C6EFCE", "FFEB9C", "BDD7EE", "F8CBAD", "D9E1F2", "E1D5E7", "FCE4D6"]
 
@@ -122,14 +128,12 @@ def ottieni_crediti_rimasti(nome_squadra):
     return 0
 
 def conta_aste_attive_squadra(nome_squadra):
-    # Conta quante offerte massime ha attive questa squadra in questo momento (massimo 2)
     count = 0
     if asta_attiva["giocatore"] and asta_attiva["squadra_leader"] == nome_squadra:
         count += 1
     return count
 
 def verifica_taglio(nome_giocatore):
-    # Controlla se il giocatore è nel foglio Tagli e restituisce il valore minimo di taglio (altrimenti 1)
     if not os.path.exists(FILE_NAME):
         return 1
     wb = openpyxl.load_workbook(FILE_NAME, data_only=True)
@@ -137,7 +141,6 @@ def verifica_taglio(nome_giocatore):
         return 1
     ws = wb["Tagli"]
     for row in range(2, ws.max_row + 1):
-        # Ipotizziamo colonna A = Giocatore, Colonna B = Valore Taglio (o simile)
         val = ws.cell(row=row, column=1).value
         if val and str(val).strip().lower() == str(nome_giocatore).strip().lower():
             try:
@@ -174,11 +177,25 @@ async def controlla_scadenza_asta(context: ContextTypes.DEFAULT_TYPE):
 
 # --- COMANDI TELEGRAM ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 FantaBassaBot operativo con aste segrete e rilanci automatici!")
+    await update.message.reply_text("🤖 FantaBassaBot operativo con aste segrete, rilanci automatici e sincronizzazione!")
+
+async def test_asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Non autorizzato.")
+        return
+    await update.message.reply_text("🔄 Sincronizzazione file Excel in corso...")
+    carica_su_github(FILE_NAME)
+    if os.path.exists(FILE_NAME):
+        with open(FILE_NAME, "rb") as f:
+            await context.bot.send_document(
+                chat_id=ADMIN_ID,
+                document=f,
+                caption="📊 File Excel attuale."
+            )
+    await update.message.reply_text("Test completato!")
 
 async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global asta_attiva
-    # Cancella subito il messaggio dell'utente per non mostrare l'offerta massima
     try:
         await update.message.delete()
     except Exception:
@@ -198,12 +215,23 @@ async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         offerta_massima = float(args[-1])
-        giocatore = args[-2]
-        squadra = " ".join(args[:-2])
+        giocatore = " ".join(args[:-2])
+        squadra = args[0] # Se la squadra è formata da più parole, gestiamola correttamente
+        # Ricalcoliamo squadra e giocatore correttamente dividendo gli argomenti:
+        # L'ultimo è l'offerta, gli altri formano Squadra e Giocatore. 
+        # Convenzione: /asta [Squadra] [Giocatore] [OffertaMax] -> se la squadra ha 1 parola:
     except ValueError:
         return
 
-    # Controlli vincoli crediti e slot
+    # Scomposizione robusta: Ultimo = Offerta Max. Tutto il resto diviso tra Squadra e Giocatore.
+    # Per semplicità assumiamo che il primo argomento sia la Squadra e i restanti (tranne l'ultimo) siano il Giocatore.
+    try:
+        offerta_massima = float(args[-1])
+        squadra = args[0]
+        giocatore = " ".join(args[1:-1])
+    except ValueError:
+        return
+
     crediti_rimasti = ottieni_crediti_rimasti(squadra)
     if offerta_massima > (crediti_rimasti - 1):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Offerta non valida per {squadra}: supera il limite consentito (Crediti rimasti: {crediti_rimasti}, max offerta: {crediti_rimasti - 1}).")
@@ -220,7 +248,6 @@ async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ L'offerta massima deve essere almeno pari al minimo richiesto ({offerta_iniziale}).")
         return
 
-    # Avvia l'asta partendo da 1 (o dal valore di taglio) e registrando l'offerta massima in segreto
     asta_attiva["giocatore"] = giocatore
     asta_attiva["offerta_corrente"] = offerta_iniziale
     asta_attiva["squadra_leader"] = squadra
@@ -240,7 +267,6 @@ async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def offerta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global asta_attiva
-    # Cancella il messaggio dell'offerta per mantenere la riservatezza delle cifre massime
     try:
         await update.message.delete()
     except Exception:
@@ -255,13 +281,11 @@ async def offerta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         nuova_offerta_max = float(args[-1])
-        squadra = " ".join(args[:-1])
+        squadra = args[0]
+        giocatore = asta_attiva["giocatore"]
     except ValueError:
         return
 
-    giocatore = asta_attiva["giocatore"]
-
-    # Controlli crediti e slot
     crediti_rimasti = ottieni_crediti_rimasti(squadra)
     if nuova_offerta_max > (crediti_rimasti - 1):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {squadra}: Offerta massima superiore ai crediti disponibili (-1).")
@@ -271,21 +295,16 @@ async def offerta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {squadra} ha già raggiunto il limite di 2 aste in contemporanea!")
         return
 
-    # Registra o aggiorna l'offerta massima segreta
     asta_attiva["offerte_massime"][squadra] = nuova_offerta_max
     leader_attuale = asta_attiva["squadra_leader"]
     max_leader = asta_attiva["offerte_massime"].get(leader_attuale, 1)
 
-    # Logica di rilancio automatico stile eBay
     if squadra == leader_attuale:
-        # Se chi è già in testa alza la sua offerta massima
         asta_attiva["scadenza"] = datetime.now() + timedelta(hours=24)
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"📈 {squadra} ha aggiornato la propria offerta massima per {giocatore}. Timer 24h rinnovato!")
         return
 
-    # Se un'altra squadra fa un'offerta
     if nuova_offerta_max > max_leader:
-        # Il nuovo sfidante supera il vecchio leader
         nuova_offerta_corrente = max_leader + 1
         if nuova_offerta_corrente > nuova_offerta_max:
             nuova_offerta_corrente = nuova_offerta_max
@@ -303,7 +322,6 @@ async def offerta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  f"⏱️ Timer 24h azzerato e fatto ripartire!"
         )
     else:
-        # La vecchia squadra in testa aveva un'offerta massima superiore, rilancia automaticamente per lei alzata di 1
         nuova_offerta_corrente = nuova_offerta_max + 1
         if nuova_offerta_corrente > max_leader:
             nuova_offerta_corrente = max_leader
@@ -339,6 +357,7 @@ def main():
         return
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("testasta", test_asta_command))
     app.add_handler(CommandHandler("asta", asta_command))
     app.add_handler(CommandHandler("offerta", offerta_command))
     app.add_handler(CommandHandler("stato", stato_asta_command))
