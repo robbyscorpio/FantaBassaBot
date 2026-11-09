@@ -18,7 +18,7 @@ GH_PAT = os.getenv("GH_PAT")
 GH_REPO = os.getenv("GH_REPO")  # Formato atteso: "robbyscorpio/FantaBassaBot"
 ADMIN_ID = 592528299
 
-def carica_su_github(file_path="fanta.xlsx", percorso_nel_repo="fanta.xlsx"):
+def carica_su_github(file_path="Listone_Fantacalcio.xlsx", percorso_nel_repo="Listone_Fantacalcio.xlsx"):
     """
     Carica o aggiorna il file Excel direttamente nel repository GitHub usando il PAT.
     Gestisce automaticamente il recupero dello SHA se il file esiste già.
@@ -65,7 +65,7 @@ def carica_su_github(file_path="fanta.xlsx", percorso_nel_repo="fanta.xlsx"):
         logger.error(f"Errore GitHub API ({put_response.status_code}): {put_response.text}")
         return False
 
-async def aggiorna_excel_dopo_asta(bot, file_path="fanta.xlsx"):
+async def aggiorna_excel_dopo_asta(bot, file_path="Listone_Fantacalcio.xlsx"):
     """
     Funzione da richiamare alla chiusura dell'asta:
     1. Sincronizza il file su GitHub.
