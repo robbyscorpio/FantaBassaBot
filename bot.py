@@ -60,7 +60,38 @@ def get_nome_squadra(update: Update) -> str:
     
     return f"@{user.username}" if user.username else user.first_name
 
-# --- MODIFICA AUTOMATICA DEL FILE EXCEL ---
+# --- SALVATAGGIO IMPOSTAZIONI SU EXCEL ---
+def salva_impostazione_excel(chiave, valore):
+    file_excel = "Listone_Fantacalcio.xlsx"
+    try:
+        if os.path.exists(file_excel):
+            wb = openpyxl.load_workbook(file_excel)
+        else:
+            wb = openpyxl.Workbook()
+            wb.active.title = "Rosa"
+
+        if "Impostazioni" in wb.sheetnames:
+            ws = wb["Impostazioni"]
+        else:
+            ws = wb.create_sheet("Impostazioni")
+            ws.append(["Chiave", "Valore"])
+
+        # Cerca se la chiave esiste già per aggiornarla, altrimenti la aggiunge
+        trovato = False
+        for r in range(2, ws.max_row + 1):
+            if str(ws.cell(row=r, column=1).value).strip() == chiave:
+                ws.cell(row=r, column=2).value = str(valore)
+                trovato = True
+                break
+        
+        if not trovato:
+            ws.append([chiave, str(valore)])
+
+        wb.save(file_excel)
+    except Exception as e:
+        print(f"❌ Errore nel salvataggio dell'impostazione {chiave}: {e}")
+
+# --- MODIFICA AUTOMATICA DEL FILE EXCEL (ROSA) ---
 def aggiorna_excel_dopo_asta(nome_giocatore, squadra_vincitrice, prezzo_finale):
     file_excel = "Listone_Fantacalcio.xlsx"
     if not os.path.exists(file_excel):
@@ -71,7 +102,6 @@ def aggiorna_excel_dopo_asta(nome_giocatore, squadra_vincitrice, prezzo_finale):
         nome_foglio_rosa = next((f for f in wb.sheetnames if f.lower() == 'rosa'), wb.sheetnames[0])
         ws = wb[nome_foglio_rosa]
 
-        # Trova le colonne leggendo la prima riga (intestazioni)
         col_calciatore = None
         col_squadra = None
         col_quotazione = None
@@ -86,10 +116,8 @@ def aggiorna_excel_dopo_asta(nome_giocatore, squadra_vincitrice, prezzo_finale):
                 col_quotazione = col
 
         if not col_calciatore or not col_squadra:
-            print("⚠️ Impossibile trovare le colonne 'Calciatore' o 'Squadra' nel file Excel per l'aggiornamento.")
             return
 
-        # Cerca la riga del giocatore
         riga_trovata = None
         for r in range(2, ws.max_row + 1):
             val_c = str(ws.cell(row=r, column=col_calciatore).value).strip()
@@ -98,29 +126,24 @@ def aggiorna_excel_dopo_asta(nome_giocatore, squadra_vincitrice, prezzo_finale):
                 break
 
         if riga_trovata:
-            # Scrive la squadra e la spesa
             ws.cell(row=riga_trovata, column=col_squadra).value = squadra_vincitrice
             if col_quotazione:
                 ws.cell(row=riga_trovata, column=col_quotazione).value = prezzo_finale
 
-            # Evidenzia le celle con un colore di sfondo (es. Verde Chiaro)
             verde_chiaro = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
             for c in range(1, ws.max_column + 1):
                 ws.cell(row=riga_trovata, column=c).fill = verde_chiaro
 
             wb.save(file_excel)
-            print(f"✅ File Excel aggiornato: {nome_giocatore} assegnato a {squadra_vincitrice} ({prezzo_finale} crediti).")
-        else:
-            print(f"⚠️ Giocatore {nome_giocatore} non trovato nel foglio Excel per la colorazione.")
-
     except Exception as e:
-        print(f"❌ Errore durante l'aggiornamento del file Excel: {e}")
+        print(f"❌ Errore durante l'aggiornamento della rosa su Excel: {e}")
 
 # --- CARICAMENTO AUTOMATICO DA EXCEL ---
 def carica_dati_da_excel():
     global rose_squadre, crediti_squadre, mappa_utenti, giocatori_tagliati, giocatori_liberi
-    file_excel = "Listone_Fantacalcio.xlsx"
+    global data_inizio_mercato, data_fine_mercato, mercato_bloccato
     
+    file_excel = "Listone_Fantacalcio.xlsx"
     if not os.path.exists(file_excel):
         print(f"❌ ERRORE CRITICO: Il file {file_excel} NON è stato trovato nella cartella del progetto!")
         return
@@ -210,6 +233,28 @@ def carica_dati_da_excel():
                     "prezzo": prezzo
                 }
 
+        # 4. LETTURA DEL FOGLIO 'Impostazioni' (se esiste)
+        nome_foglio_imp = next((f for f in fogli_disponibili if f.lower() == 'impostazioni'), None)
+        if nome_foglio_imp:
+            df_imp = pd.read_excel(xls, sheet_name=nome_foglio_imp)
+            for _, row in df_imp.iterrows():
+                chiave = str(row.get("Chiave", "")).strip().lower()
+                valore = str(row.get("Valore", "")).strip()
+                
+                if chiave == "data_inizio" and valore and valore.lower() != "nan":
+                    try:
+                        data_inizio_mercato = datetime.strptime(valore, "%d/%m/%Y %H:%M")
+                    except ValueError:
+                        pass
+                elif chiave == "data_fine" and valore and valore.lower() != "nan":
+                    try:
+                        data_fine_mercato = datetime.strptime(valore, "%d/%m/%Y %H:%M")
+                    except ValueError:
+                        pass
+                elif chiave == "mercato_bloccato":
+                    mercato_bloccato = (valore.lower() == "true")
+            print("✅ Impostazioni di mercato caricate correttamente da Excel.")
+
     except Exception as e:
         print(f"❌ Errore critico durante la lettura del file Excel: {e}")
 
@@ -287,7 +332,6 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
         if vincitore in crediti_squadre:
             crediti_squadre[vincitore] = max(0, crediti_squadre[vincitore] - offerta)
 
-        # AGGIORNA AUTOMATICAMENTE IL FILE EXCEL
         aggiorna_excel_dopo_asta(nome, vincitore, offerta)
 
         await context.bot.send_message(
@@ -326,8 +370,13 @@ async def set_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data_fine_mercato = datetime.strptime(str_fine, "%d/%m/%Y %H:%M")
         mercato_bloccato = False
 
+        # Salva persistentemente su Excel
+        salva_impostazione_excel("data_inizio", str_inizio)
+        salva_impostazione_excel("data_fine", str_fine)
+        salva_impostazione_excel("mercato_bloccato", False)
+
         await update.message.reply_text(
-            f"📅 **PERIODO MERCATO IMPOSTATO E APERTO!**\n\n"
+            f"📅 **PERIODO MERCATO IMPOSTATO, SALVATO E APERTO!**\n\n"
             f"🟢 **Apertura:** {data_inizio_mercato.strftime('%d/%m/%Y alle %H:%M')}\n"
             f"🔴 **Chiusura:** {data_fine_mercato.strftime('%d/%m/%Y alle %H:%M')}",
             parse_mode="Markdown"
@@ -341,9 +390,12 @@ async def blocca_mercato(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     global mercato_bloccato
     mercato_bloccato = not mercato_bloccato
-    stato_testo = "🛑 **BLOCCATO**" if mercato_bloccato else "🟢 **APERTO E ATTIVO**"
     
-    await update.message.reply_text(f"🔒 **STATO MERCATO AGGIORNATO:** {stato_testo}", parse_mode="Markdown")
+    # Salva lo stato aggiornato su Excel
+    salva_impostazione_excel("mercato_bloccato", mercato_bloccato)
+
+    stato_testo = "🛑 **BLOCCATO**" if mercato_bloccato else "🟢 **APERTO E ATTIVO**"
+    await update.message.reply_text(f"🔒 **STATO MERCATO AGGIORNATO E SALVATO:** {stato_testo}", parse_mode="Markdown")
 
 async def mostra_crediti(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not crediti_squadre:
@@ -659,6 +711,10 @@ async def stato_aste(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stato_testo = "🛑 Bloccato" if mercato_bloccato else "🟢 Aperto"
     messaggio = f"📅 **Stato Mercato:** {stato_testo}\n\n"
     
+    if data_inizio_mercato and data_fine_mercato:
+        messaggio += f"🕒 **Inizio:** {data_inizio_mercato.strftime('%d/%m/%Y %H:%M')}\n"
+        messaggio += f"🕒 **Fine:** {data_fine_mercato.strftime('%d/%m/%Y %H:%M')}\n\n"
+
     if not aste:
         messaggio += "ℹ️ Al momento non ci sono aste in corso.\n\n"
     else:
