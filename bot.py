@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import pandas as pd
+import openpyxl
+from openpyxl.styles import PatternFill
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -47,20 +49,72 @@ data_fine_mercato = None
 mercato_bloccato = False
 
 def get_nome_squadra(update: Update) -> str:
-    """Riconosce la squadra associata controllando prima lo Username e poi il Nome Telegram"""
     user = update.effective_user
     username = f"@{user.username}".lower() if user.username else ""
     first_name = user.first_name.strip().lower() if user.first_name else ""
     
-    # Cerca prima per username (es. @mario_rossi)
     if username in mappa_utenti:
         return mappa_utenti[username]
-    # Poi cerca per nome del profilo (es. mario)
     if first_name in mappa_utenti:
         return mappa_utenti[first_name]
     
-    # Fallback se non trovato in tabella
     return f"@{user.username}" if user.username else user.first_name
+
+# --- MODIFICA AUTOMATICA DEL FILE EXCEL ---
+def aggiorna_excel_dopo_asta(nome_giocatore, squadra_vincitrice, prezzo_finale):
+    file_excel = "Listone_Fantacalcio.xlsx"
+    if not os.path.exists(file_excel):
+        return
+
+    try:
+        wb = openpyxl.load_workbook(file_excel)
+        nome_foglio_rosa = next((f for f in wb.sheetnames if f.lower() == 'rosa'), wb.sheetnames[0])
+        ws = wb[nome_foglio_rosa]
+
+        # Trova le colonne leggendo la prima riga (intestazioni)
+        col_calciatore = None
+        col_squadra = None
+        col_quotazione = None
+
+        for col in range(1, ws.max_column + 1):
+            val = str(ws.cell(row=1, column=col).value).strip().lower()
+            if val == "calciatore":
+                col_calciatore = col
+            elif val == "squadra":
+                col_squadra = col
+            elif val == "quotazione":
+                col_quotazione = col
+
+        if not col_calciatore or not col_squadra:
+            print("⚠️ Impossibile trovare le colonne 'Calciatore' o 'Squadra' nel file Excel per l'aggiornamento.")
+            return
+
+        # Cerca la riga del giocatore
+        riga_trovata = None
+        for r in range(2, ws.max_row + 1):
+            val_c = str(ws.cell(row=r, column=col_calciatore).value).strip()
+            if val_c.lower() == nome_giocatore.lower():
+                riga_trovata = r
+                break
+
+        if riga_trovata:
+            # Scrive la squadra e la spesa
+            ws.cell(row=riga_trovata, column=col_squadra).value = squadra_vincitrice
+            if col_quotazione:
+                ws.cell(row=riga_trovata, column=col_quotazione).value = prezzo_finale
+
+            # Evidenzia le celle con un colore di sfondo (es. Verde Chiaro)
+            verde_chiaro = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+            for c in range(1, ws.max_column + 1):
+                ws.cell(row=riga_trovata, column=c).fill = verde_chiaro
+
+            wb.save(file_excel)
+            print(f"✅ File Excel aggiornato: {nome_giocatore} assegnato a {squadra_vincitrice} ({prezzo_finale} crediti).")
+        else:
+            print(f"⚠️ Giocatore {nome_giocatore} non trovato nel foglio Excel per la colorazione.")
+
+    except Exception as e:
+        print(f"❌ Errore durante l'aggiornamento del file Excel: {e}")
 
 # --- CARICAMENTO AUTOMATICO DA EXCEL ---
 def carica_dati_da_excel():
@@ -74,12 +128,10 @@ def carica_dati_da_excel():
     try:
         xls = pd.ExcelFile(file_excel)
         fogli_disponibili = xls.sheet_names
-        print(f"📊 Fogli trovati nel file Excel: {fogli_disponibili}")
 
-        # 1. LETTURA DEL FOGLIO 'Rosa' (Calciatore, Ruolo, Squadra, Quotazione)
+        # 1. LETTURA DEL FOGLIO 'Rosa'
         nome_foglio_rosa = next((f for f in fogli_disponibili if f.lower() == 'rosa'), fogli_disponibili[0])
         df_rosa = pd.read_excel(xls, sheet_name=nome_foglio_rosa)
-        print(f"📄 Lette {len(df_rosa)} righe dal foglio '{nome_foglio_rosa}'")
         
         for _, row in df_rosa.iterrows():
             nome = str(row.get("Calciatore", "")).strip()
@@ -112,9 +164,7 @@ def carica_dati_da_excel():
                     "prezzo": prezzo
                 })
 
-        print(f"✅ Caricati {len(giocatori_liberi)} giocatori liberi e {sum(len(v) for v in rose_squadre.values())} giocatori in rosa.")
-
-        # 2. LETTURA DEL FOGLIO DEI CREDITI (Squadra, Crediti rimasti, Nome Telegram, Username)
+        # 2. LETTURA DEL FOGLIO DEI CREDITI
         nome_foglio_crediti = next((f for f in fogli_disponibili if f.lower() == 'crediti'), None)
         if nome_foglio_crediti:
             df_crediti = pd.read_excel(xls, sheet_name=nome_foglio_crediti)
@@ -133,19 +183,12 @@ def carica_dati_da_excel():
                 
                 crediti_squadre[squadra] = crediti
                 
-                # Mappa il Nome Telegram se presente
                 if nome_telegram and nome_telegram.lower() != "nan":
                     mappa_utenti[nome_telegram.lower()] = squadra
-                    
-                # Mappa lo Username se presente
                 if username and username.lower() != "nan":
                     mappa_utenti[username.lower()] = squadra
-                    
-            print(f"✅ Caricati i crediti per {len(crediti_squadre)} squadre e mappati {len(mappa_utenti)} profili Telegram.")
-        else:
-            print("⚠️ Attenzione: Foglio 'Crediti' non trovato nel file Excel.")
 
-        # 3. LETTURA DEL FOGLIO DEI TAGLI (Nome giocatore, Squadra, Prezzo Taglio)
+        # 3. LETTURA DEL FOGLIO DEI TAGLI
         nome_foglio_tagli = next((f for f in fogli_disponibili if f.lower() == 'tagli'), None)
         if nome_foglio_tagli:
             df_tagli = pd.read_excel(xls, sheet_name=nome_foglio_tagli)
@@ -166,7 +209,6 @@ def carica_dati_da_excel():
                     "squadra": squadra,
                     "prezzo": prezzo
                 }
-            print(f"✅ Caricati {len(giocatori_tagliati)} giocatori tagliati.")
 
     except Exception as e:
         print(f"❌ Errore critico durante la lettura del file Excel: {e}")
@@ -245,12 +287,16 @@ async def timer_asta(context: ContextTypes.DEFAULT_TYPE):
         if vincitore in crediti_squadre:
             crediti_squadre[vincitore] = max(0, crediti_squadre[vincitore] - offerta)
 
+        # AGGIORNA AUTOMATICAMENTE IL FILE EXCEL
+        aggiorna_excel_dopo_asta(nome, vincitore, offerta)
+
         await context.bot.send_message(
             chat_id=chat_id,
             text=f"🔴 **ASTA CHIUSA!** 🔴\n\n"
                  f"⚽ **Giocatore:** {nome}\n"
                  f"🏆 **Aggiudicato a:** {vincitore}\n"
-                 f"💰 **Prezzo finale:** {offerta} crediti"
+                 f"💰 **Prezzo finale:** {offerta} crediti\n"
+                 f"📊 *File Excel aggiornato con successo!*"
         )
         del aste[giocatore_key]
 
@@ -310,7 +356,6 @@ async def mostra_crediti(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(messaggio, parse_mode="Markdown")
 
-# --- GESTIONE ROSE E LIBERI ---
 async def seleziona_rosa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tutte_squadre = list(set(list(rose_squadre.keys()) + list(crediti_squadre.keys())))
     if not tutte_squadre:
