@@ -96,7 +96,7 @@ def assegna_giocatore_excel(nome_squadra, nome_giocatore, prezzo):
         wb.save(FILE_NAME)
         return False, f"Giocatore '{nome_giocatore}' non trovato nel foglio Rosa."
 
-    # 2. Foglio Crediti (Colonna A = Squadra, Colonna B = Crediti rimasti)[cite: 3]
+    # 2. Foglio Crediti (Colonna A = Squadra, Colonna B = Crediti rimasti)
     for row in range(2, ws_crediti.max_row + 1):
         if str(ws_crediti.cell(row=row, column=1).value).strip().lower() == str(nome_squadra).strip().lower():
             crediti_attuali = float(ws_crediti.cell(row=row, column=2).value or 0)
@@ -105,6 +105,38 @@ def assegna_giocatore_excel(nome_squadra, nome_giocatore, prezzo):
 
     wb.save(FILE_NAME)
     return True, f"Assegnazione: ⚽ {nome_giocatore} -> {nome_squadra} ({prezzo} crediti)."
+
+def trova_squadra_da_telegram(user):
+    """
+    Cerca nel foglio 'Crediti' la squadra associata all'utente Telegram.
+    Colonna A: Squadra
+    Colonna B: Crediti rimasti
+    Colonna C: UtenteTelegram (Nome visualizzato)
+    Colonna D: Username (con o senza '@')
+    """
+    if not os.path.exists(FILE_NAME):
+        return None
+    wb = openpyxl.load_workbook(FILE_NAME, data_only=True)
+    if "Crediti" not in wb.sheetnames:
+        return None
+    ws = wb["Crediti"]
+    
+    nome_utente_tg = str(user.first_name).strip().lower() if user.first_name else ""
+    full_name_tg = f"{user.first_name} {user.last_name}".strip().lower() if user.first_name and user.last_name else nome_utente_tg
+    username_tg = str(user.username).strip().lower().lstrip('@') if user.username else ""
+
+    for row in range(2, ws.max_row + 1):
+        squadra = ws.cell(row=row, column=1).value
+        tg_nome_cell = str(ws.cell(row=row, column=3).value or "").strip().lower()
+        username_cell = str(ws.cell(row=row, column=4).value or "").strip().lower().lstrip('@')
+
+        match_nome = tg_nome_cell and (tg_nome_cell == nome_utente_tg or tg_nome_cell == full_name_tg)
+        match_username = username_cell and username_tg and username_cell == username_tg
+
+        if squadra and (match_nome or match_username):
+            return str(squadra).strip()
+            
+    return None
 
 def ottieni_crediti_rimasti(nome_squadra):
     if not os.path.exists(FILE_NAME):
@@ -144,7 +176,7 @@ def verifica_taglio(nome_giocatore):
     return 1
 
 def leggi_impostazioni_mercato():
-    """Legge dal foglio IMPOSTAZIONI data inizio, data fine e stato blocco[cite: 3]."""
+    """Legge dal foglio IMPOSTAZIONI data inizio, data fine e stato blocco."""
     if not os.path.exists(FILE_NAME):
         return "N/D", "N/D", False
     wb = openpyxl.load_workbook(FILE_NAME, data_only=True)
@@ -167,7 +199,7 @@ def leggi_impostazioni_mercato():
     return str(data_inizio), str(data_fine), bloccato
 
 def imposta_stato_mercato(stato_bool):
-    """Aggiorna lo stato di mercato_bloccato nel foglio IMPOSTAZIONI[cite: 3]."""
+    """Aggiorna lo stato di mercato_bloccato nel foglio IMPOSTAZIONI."""
     if not os.path.exists(FILE_NAME):
         return False
     wb = openpyxl.load_workbook(FILE_NAME)
@@ -181,7 +213,7 @@ def imposta_stato_mercato(stato_bool):
     return True
 
 def get_lista_squadre():
-    """Estrae l'elenco delle squadre dal foglio Crediti (colonna A)[cite: 3]."""
+    """Estrae l'elenco delle squadre dal foglio Crediti (colonna A)."""
     if not os.path.exists(FILE_NAME):
         return []
     wb = openpyxl.load_workbook(FILE_NAME, data_only=True)
@@ -190,7 +222,7 @@ def get_lista_squadre():
     ws = wb["Crediti"]
     squadre = []
     for row in range(2, ws.max_row + 1):
-        sq = ws.cell(row=row, column=1).value[cite: 3]
+        sq = ws.cell(row=row, column=1).value
         if sq and str(sq).strip():
             squadre.append(str(sq).strip())
     return squadre
@@ -228,12 +260,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def guida_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     testo = (
         "📖 **GUIDA AI COMANDI**\n\n"
-        "🔹 `/asta [Squadra] [Giocatore] [OffertaMax]` - Avvia un'asta segreta.\n"
-        "🔹 `/offerta [Squadra] [OffertaMax]` - Invia un rilancio segreto (rilancio automatico stile eBay).\n"
+        "🔹 `/asta [Nome Giocatore] [OffertaMax]` - Avvia un'asta (riconosce la squadra in automatico)[cite: 1].\n"
+        "🔹 `/rilancia [Nome Giocatore] [OffertaMax]` - Invia un rilancio segreto su un'asta specifica[cite: 1].\n"
         "🔹 `/stato` - Mostra lo stato dell'asta corrente.\n"
         "🔹 `/rosa` - Mostra i pulsanti con le squadre per visualizzare le rose.\n"
         "🔹 `/liberi` - Mostra i 4 ruoli (P, D, C, A) per filtrare i giocatori liberi.\n"
-        "🔹 `/mercato` - Mostra date e stato attuale del mercato (foglio Impostazioni).\n"
+        "🔹 `/mercato` - Mostra date e stato attuale del mercato (foglio IMPOSTAZIONI).\n"
         "🔹 `/blocca_merc` - Blocca il mercato (Admin).\n"
         "🔹 `/sblocca_merc` - Sblocca il mercato (Admin).\n"
         "🔹 `/testasta` - Sincronizza Excel su GitHub (Admin)."
@@ -253,6 +285,8 @@ async def test_asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global asta_attiva
+    user = update.effective_user
+
     try:
         await update.message.delete()
     except Exception:
@@ -263,7 +297,9 @@ async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Il mercato è attualmente BLOCCATO.")
         return
 
-    if update.effective_user.id != ADMIN_ID:
+    squadra = trova_squadra_da_telegram(user)
+    if not squadra:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Non risulti associato a nessuna squadra nel foglio 'Crediti' (controlla il tuo Nome o Username).")
         return
 
     if asta_attiva["giocatore"] is not None:
@@ -271,20 +307,20 @@ async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     args = context.args
-    if len(args) < 3:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Uso corretto: `/asta [Nome Squadra] [Nome Giocatore] [Offerta Massima]`", parse_mode="Markdown")
+    if len(args) < 2:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Uso corretto: `/asta [Nome Giocatore] [Offerta Massima]`", parse_mode="Markdown")
         return
 
     try:
         offerta_massima = float(args[-1])
-        squadra = args[0]
-        giocatore = " ".join(args[1:-1])
+        giocatore = " ".join(args[:-1])
     except ValueError:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Formato non valido. Usa: `/asta [Nome Giocatore] [Offerta Massima]`", parse_mode="Markdown")
         return
 
     crediti_rimasti = ottieni_crediti_rimasti(squadra)
     if offerta_massima > (crediti_rimasti - 1):
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Offerta non valida per {squadra}: supera il limite consentito (-1).")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Offerta non valida per {squadra}: supera il limite consentito (-1). Crediti attuali: {crediti_rimasti}.")
         return
 
     if conta_aste_attive_squadra(squadra) >= 2:
@@ -311,12 +347,14 @@ async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
              f"💰 Offerta corrente: **{offerta_iniziale}** crediti\n"
              f"🛡️ In testa: **{squadra}**\n"
              f"⏳ Scadenza timer: 24h\n\n"
-             f"*(L'offerta massima iniziale è protetta e nascosta)*",
+             f"*(L'offerta massima inserita da {squadra} è protetta e nascosta)*",
         parse_mode="Markdown"
     )
 
-async def offerta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def rilancia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global asta_attiva
+    user = update.effective_user
+
     try:
         await update.message.delete()
     except Exception:
@@ -327,22 +365,36 @@ async def offerta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if asta_attiva["giocatore"] is None:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Al momento non c'è nessuna asta attiva.")
+        return
+
+    squadra = trova_squadra_da_telegram(user)
+    if not squadra:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Non risulti associato a nessuna squadra nel foglio 'Crediti'.")
         return
 
     args = context.args
     if len(args) < 2:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Uso corretto: `/rilancia [Nome Giocatore] [Offerta Massima]`", parse_mode="Markdown")
         return
 
     try:
         nuova_offerta_max = float(args[-1])
-        squadra = args[0]
-        giocatore = asta_attiva["giocatore"]
+        giocatore_richiesto = " ".join(args[:-1]).strip().lower()
     except ValueError:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Inserisci un valore numerico valido per il rilancio.")
         return
+
+    giocatore_attuale = str(asta_attiva["giocatore"]).strip().lower()
+    if giocatore_richiesto != giocatore_attuale:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ L'asta attiva al momento è per **{asta_attiva['giocatore']}**, non per '{' '.join(args[:-1])}'.")
+        return
+
+    giocatore = asta_attiva["giocatore"]
 
     crediti_rimasti = ottieni_crediti_rimasti(squadra)
     if nuova_offerta_max > (crediti_rimasti - 1):
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {squadra}: Offerta superiore ai crediti disponibili (-1).")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {squadra}: Offerta superiore ai crediti disponibili (-1). Crediti attuali: {crediti_rimasti}.")
         return
 
     if asta_attiva["squadra_leader"] != squadra and conta_aste_attive_squadra(squadra) >= 2:
@@ -361,7 +413,7 @@ async def offerta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if nuova_offerta_max > max_leader:
         nuova_offerta_corrente = max_leader + 1
         if nuova_offerta_corrente > nuova_offerta_max:
-            nuova_offerta_corrente = nueva_offerta_max
+            nuova_offerta_corrente = nuova_offerta_max
 
         asta_attiva["squadra_leader"] = squadra
         asta_attiva["offerta_corrente"] = nuova_offerta_corrente
@@ -376,7 +428,7 @@ async def offerta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  f"⏱️ Timer 24h azzerato e fatto ripartire!"
         )
     else:
-        nuova_offerta_corrente = nuova_offerta_max + 1
+        nuova_offerta_corrente = nuvova_offerta_max + 1 if 'nuvova_offerta_max' in locals() else nuova_offerta_max + 1
         if nuova_offerta_corrente > max_leader:
             nuova_offerta_corrente = max_leader
 
@@ -387,7 +439,7 @@ async def offerta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=update.effective_chat.id,
             text=f"🤖 **RILANCIO AUTOMATICO DEL SISTEMA!**\n"
                  f"Per {giocatore}, la squadra **{leader_attuale}** copre il rilancio.\n"
-                 f"💰 Offerta corrente visibile: **{nuova_offerta_corrente}** crediti\n"
+                 f"💰 Nuova offerta corrente visibile: **{nuova_offerta_corrente}** crediti\n"
                  f"⏱️ Timer 24h rinnovato!"
         )
 
@@ -413,7 +465,6 @@ async def rosa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Nessuna squadra trovata nel file Excel.")
         return
     
-    # Crea una tastiera con un pulsante per ogni squadra (2 per riga)
     keyboard = []
     row = []
     for sq in squadre:
@@ -543,7 +594,7 @@ def main():
     app.add_handler(CommandHandler("guida", guida_command))
     app.add_handler(CommandHandler("testasta", test_asta_command))
     app.add_handler(CommandHandler("asta", asta_command))
-    app.add_handler(CommandHandler("offerta", offerta_command))
+    app.add_handler(CommandHandler("rilancia", rilancia_command))
     app.add_handler(CommandHandler("stato", stato_asta_command))
     app.add_handler(CommandHandler("rosa", rosa_command))
     app.add_handler(CommandHandler("liberi", liberi_command))
