@@ -86,7 +86,7 @@ def ottieni_ruolo_giocatore(nome_giocatore):
 def ha_slot_disponibili(nome_squadra, ruolo):
     """Verifica se la squadra ha ancora slot liberi per quel determinato ruolo (3P, 8D, 8C, 6A)."""
     if not ruolo or ruolo not in LIMITI_RUOLI:
-        return True  # Se il ruolo non è specificato passiamo oltre
+        return True
 
     limite_max = LIMITI_RUOLI[ruolo]
 
@@ -134,7 +134,7 @@ def assegna_giocatore_excel(nome_squadra, nome_giocatore, prezzo):
         wb.save(FILE_NAME)
         return False, f"Giocatore '{nome_giocatore}' non trovato nel foglio Rosa."
 
-    # 2. Foglio Crediti (Colonna A = Squadra, Colonna B = Crediti rimasti)
+    # 2. Foglio Crediti
     for row in range(2, ws_crediti.max_row + 1):
         if str(ws_crediti.cell(row=row, column=1).value).strip().lower() == str(nome_squadra).strip().lower():
             crediti_attuali = float(ws_crediti.cell(row=row, column=2).value or 0)
@@ -146,11 +146,8 @@ def assegna_giocatore_excel(nome_squadra, nome_giocatore, prezzo):
 
 def trova_squadra_da_telegram(user):
     """
-    Cerca nel foglio 'Crediti' la squadra associata all'utente Telegram.
-    Colonna A: Squadra
-    Colonna B: Crediti rimasti
-    Colonna C: UtenteTelegram (Nome visualizzato)
-    Colonna D: Username (con o senza '@')
+    Cerca nel foglio 'Crediti' la squadra associata all'utente Telegram
+    confrontando Nome, Cognome o Username in modo flessibile.
     """
     if not os.path.exists(FILE_NAME):
         return None
@@ -159,20 +156,33 @@ def trova_squadra_da_telegram(user):
         return None
     ws = wb["Crediti"]
     
-    nome_utente_tg = str(user.first_name).strip().lower() if user.first_name else ""
-    full_name_tg = f"{user.first_name} {user.last_name}".strip().lower() if user.first_name and user.last_name else nome_utente_tg
-    username_tg = str(user.username).strip().lower().lstrip('@') if user.username else ""
+    first_name = str(user.first_name or "").strip().lower()
+    last_name = str(user.last_name or "").strip().lower()
+    full_name = f"{first_name} {last_name}".strip()
+    username = str(user.username or "").strip().lower().lstrip('@')
 
     for row in range(2, ws.max_row + 1):
         squadra = ws.cell(row=row, column=1).value
         tg_nome_cell = str(ws.cell(row=row, column=3).value or "").strip().lower()
         username_cell = str(ws.cell(row=row, column=4).value or "").strip().lower().lstrip('@')
 
-        match_nome = tg_nome_cell and (tg_nome_cell == nome_utente_tg or tg_nome_cell == full_name_tg)
-        match_username = username_cell and username_tg and username_cell == username_tg
+        if not squadra:
+            continue
 
-        if squadra and (match_nome or match_username):
-            return str(squadra).strip()
+        squadra_str = str(squadra).strip()
+
+        # 1. Controllo Username Telegram
+        if username_cell and username:
+            if username_cell == username or username_cell in username or username in username_cell:
+                return squadra_str
+
+        # 2. Controllo Nome / Cognome / Nome Completo
+        if tg_nome_cell:
+            if (tg_nome_cell == first_name or 
+                tg_nome_cell == full_name or 
+                tg_nome_cell in full_name or 
+                first_name in tg_nome_cell):
+                return squadra_str
             
     return None
 
@@ -338,7 +348,7 @@ async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     squadra = trova_squadra_da_telegram(user)
     if not squadra:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Non risulti associato a nessuna squadra nel foglio 'Crediti'.")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Non risulti associato a nessuna squadra nel foglio 'Crediti' (controlla il tuo Nome o Username).")
         return
 
     args = context.args
@@ -423,7 +433,7 @@ async def rilancia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     squadra = trova_squadra_da_telegram(user)
     if not squadra:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Non risulti associato a nessuna squadra nel foglio 'Crediti'.")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Non risulti associato a nessuna squadra nel foglio 'Crediti' (controlla il tuo Nome o Username).")
         return
 
     args = context.args
