@@ -22,14 +22,8 @@ GH_REPO = os.getenv("GH_REPO")
 ADMIN_ID = 592528299
 FILE_NAME = "Listone_Fantacalcio.xlsx"
 
-# STATO GLOBALE DELL'ASTA ATTIVA
-asta_attiva = {
-    "giocatore": None,
-    "offerta_corrente": 1,
-    "squadra_leader": None,
-    "offerte_massime": {},
-    "scadenza": None
-}
+# STATO GLOBALE DELLE ASTE ATTIVE (Dizionario con chiave = nome_giocatore in minuscolo)
+aste_attive = {}
 
 # --- SERVER HTTP PER RENDER (Health Check) ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -197,12 +191,6 @@ def ottieni_crediti_rimasti(nome_squadra):
                 return 0
     return 0
 
-def conta_aste_attive_squadra(nome_squadra):
-    count = 0
-    if asta_attiva["giocatore"] and asta_attiva["squadra_leader"] == nome_squadra:
-        count += 1
-    return count
-
 def verifica_taglio(nome_giocatore):
     if not os.path.exists(FILE_NAME):
         return 1
@@ -271,16 +259,24 @@ def get_lista_squadre():
             squadre.append(str(sq).strip())
     return squadre
 
-# --- TIMER 24 ORE BACKGROUND ---
-async def controlla_scadenza_asta(context: ContextTypes.DEFAULT_TYPE):
-    global asta_attiva
-    if asta_attiva["giocatore"] is None or asta_attiva["scadenza"] is None:
+# --- TIMER 24 ORE BACKGROUND PER ASTE MULTIPLE ---
+async def controlla_scadenza_aste(context: ContextTypes.DEFAULT_TYPE):
+    global aste_attive
+    if not aste_attive:
         return
 
-    if datetime.now() >= asta_attiva["scadenza"]:
-        giocatore = asta_attiva["giocatore"]
-        squadra = asta_attiva["squadra_leader"]
-        prezzo = asta_attiva["offerta_corrente"]
+    ora_attuale = datetime.now()
+    giocatori_scaduti = []
+
+    for giocatore_key, info in list(aste_attive.items()):
+        if info["scadenza"] and ora_attuale >= info["scadenza"]:
+            giocatori_scaduti.append(giocatore_key)
+
+    for key in giocatori_scaduti:
+        info = aste_attive.pop(key)
+        giocatore = info["giocatore_display"]
+        squadra = info["squadra_leader"]
+        prezzo = info["offerta_corrente"]
 
         if squadra:
             ok, messaggio = assegna_giocatore_excel(squadra, giocatore, prezzo)
@@ -295,8 +291,6 @@ async def controlla_scadenza_asta(context: ContextTypes.DEFAULT_TYPE):
         else:
             await context.bot.send_message(chat_id=ADMIN_ID, text=f"⏰ Asta scaduta per **{giocatore}** senza offerte.")
 
-        asta_attiva = {"giocatore": None, "offerta_corrente": 1, "squadra_leader": None, "offerte_massime": {}, "scadenza": None}
-
 # --- COMANDI TELEGRAM ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 FantaBassaBot operativo! Usa /guida per vedere tutti i comandi.")
@@ -306,11 +300,11 @@ async def guida_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 **GUIDA AI COMANDI**\n\n"
         "🔹 `/asta [Nome Giocatore] [OffertaMax]` - Avvia un'asta (riconosce la squadra in automatico).\n"
         "🔹 `/rilancia [Nome Giocatore] [OffertaMax]` - Invia un rilancio segreto su un'asta specifica.\n"
-        "🔹 `/stato` - Mostra lo stato dell'asta corrente.\n"
+        "🔹 `/stato` - Mostra lo stato di tutte le aste in corso.\n"
         "🔹 `/rosa` - Mostra i pulsanti con le squadre per visualizzare le rose.\n"
         "🔹 `/liberi` - Mostra i 4 ruoli (P, D, C, A) per filtrare i giocatori liberi.\n"
         "🔹 `/mercato` - Mostra date e stato attuale del mercato (foglio IMPOSTAZIONI).\n"
-        "🔹 `/annulla_asta` - Annulla l'asta attiva in corso (Admin).\n"
+        "🔹 `/annulla_asta [Nome Giocatore]` - Annulla un'asta specifica in corso (Admin).\n"
         "🔹 `/blocca_merc` - Blocca il mercato (Admin).\n"
         "🔹 `/sblocca_merc` - Sblocca il mercato (Admin).\n"
         "🔹 `/testasta` - Sincronizza Excel su GitHub (Admin)."
@@ -329,7 +323,7 @@ async def test_asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Test completato!")
 
 async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global asta_attiva
+    global aste_attive
     user = update.effective_user
 
     try:
@@ -344,11 +338,7 @@ async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     squadra = trova_squadra_da_telegram(user)
     if not squadra:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Non risulti associato a nessuna squadra nel foglio 'Crediti' (controlla il tuo Nome o Username).")
-        return
-
-    if asta_attiva["giocatore"] is not None:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ C'è già un'asta attiva per **{asta_attiva['giocatore']}**!")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Non risulti associato a nessuna squadra nel foglio 'Crediti'.")
         return
 
     args = context.args
@@ -358,26 +348,33 @@ async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         offerta_massima = float(args[-1])
-        giocatore = " ".join(args[:-1])
+        giocatore = " ".join(args[:-1]).strip()
+        key_giocatore = giocatore.lower()
     except ValueError:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Formato non valido. Usa: `/asta [Nome Giocatore] [Offerta Massima]`", parse_mode="Markdown")
         return
 
-    # 1. Controllo slot ruoli (3P, 8D, 8C, 6A)
+    # 1. Verifica che non ci sia già un'asta in corso per questo specifico giocatore
+    if key_giocatore in aste_attive:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ C'è già un'asta attiva per **{giocatore}**!")
+        return
+
+    # 2. Controllo slot ruoli (3P, 8D, 8C, 6A)
     ruolo_giocatore = ottieni_ruolo_giocatore(giocatore)
     if ruolo_giocatore and not ha_slot_disponibili(squadra, ruolo_giocatore):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ **{squadra}**: non hai slot liberi per il ruolo **{ruolo_giocatore}** (Limite: {LIMITI_RUOLI.get(ruolo_giocatore, 'N/D')}).")
         return
 
-    # 2. Controllo crediti
+    # 3. Controllo crediti
     crediti_rimasti = ottieni_crediti_rimasti(squadra)
     if offerta_massima > (crediti_rimasti - 1):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Offerta non valida per {squadra}: supera il limite consentito (-1). Crediti attuali: {crediti_rimasti}.")
         return
 
-    # 3. Controllo max 2 aste in contemporanea
-    if conta_aste_attive_squadra(squadra) >= 2:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {squadra} ha raggiunto il limite di 2 aste in contemporanea!")
+    # 4. Controllo max 2 aste attive dove la squadra è attualmente leader
+    aste_proprie = sum(1 for info in aste_attive.values() if info["squadra_leader"] == squadra)
+    if aste_proprie >= 2:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {squadra} ha già raggiunto il limite di 2 aste in corso dove risulta in testa!")
         return
 
     valore_minimo = verifica_taglio(giocatore)
@@ -387,11 +384,14 @@ async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ L'offerta massima deve essere almeno pari a {offerta_iniziale}.")
         return
 
-    asta_attiva["giocatore"] = giocatore
-    asta_attiva["offerta_corrente"] = offerta_iniziale
-    asta_attiva["squadra_leader"] = squadra
-    asta_attiva["offerte_massime"] = {squadra: offerta_massima}
-    asta_attiva["scadenza"] = datetime.now() + timedelta(hours=24)
+    # Salvataggio dell'asta nel dizionario globale
+    aste_attive[key_giocatore] = {
+        "giocatore_display": giocatore,
+        "offerta_corrente": offerta_iniziale,
+        "squadra_leader": squadra,
+        "offerte_massime": {squadra: offerta_massima},
+        "scadenza": datetime.now() + timedelta(hours=24)
+    }
 
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
@@ -405,7 +405,7 @@ async def asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def rilancia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global asta_attiva
+    global aste_attive
     user = update.effective_user
 
     try:
@@ -417,7 +417,7 @@ async def rilancia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if bloccato:
         return
 
-    if asta_attiva["giocatore"] is None:
+    if not aste_attive:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Al momento non c'è nessuna asta attiva.")
         return
 
@@ -433,20 +433,21 @@ async def rilancia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         nuova_offerta_max = float(args[-1])
-        giocatore_richiesto = " ".join(args[:-1]).strip().lower()
+        giocatore_richiesto = " ".join(args[:-1]).strip()
+        key_richiesta = giocatore_richiesto.lower()
     except ValueError:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Inserisci un valore numerico valido per il rilancio.")
         return
 
-    giocatore_attuale = str(asta_attiva["giocatore"]).strip().lower()
-    if giocatore_richiesto != giocatore_attuale:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ L'asta attiva al momento è per **{asta_attiva['giocatore']}**, non per '{' '.join(args[:-1])}'.")
+    if key_richiesta not in aste_attive:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Nessuna asta attiva al momento per **{giocatore_richiesto}**.")
         return
 
-    giocatore = asta_attiva["giocatore"]
+    asta = aste_attive[key_richiesta]
+    giocatore_display = asta["giocatore_display"]
 
     # 1. Controllo slot ruoli (3P, 8D, 8C, 6A)
-    ruolo_giocatore = ottieni_ruolo_giocatore(giocatore)
+    ruolo_giocatore = ottieni_ruolo_giocatore(giocatore_display)
     if ruolo_giocatore and not ha_slot_disponibili(squadra, ruolo_giocatore):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ **{squadra}**: non hai slot liberi per il ruolo **{ruolo_giocatore}** (Limite: {LIMITI_RUOLI.get(ruolo_giocatore, 'N/D')}).")
         return
@@ -457,18 +458,20 @@ async def rilancia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {squadra}: Offerta superiore ai crediti disponibili (-1). Crediti attuali: {crediti_rimasti}.")
         return
 
-    # 3. Controllo max 2 aste
-    if asta_attiva["squadra_leader"] != squadra and conta_aste_attive_squadra(squadra) >= 2:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {squadra} ha raggiunto il limite di 2 aste in contemporanea!")
-        return
+    # 3. Controllo max 2 aste in corso
+    if asta["squadra_leader"] != squadra:
+        aste_proprie = sum(1 for info in aste_attive.values() if info["squadra_leader"] == squadra)
+        if aste_proprie >= 2:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {squadra} ha già raggiunto il limite di 2 aste in corso dove risulta in testa!")
+            return
 
-    asta_attiva["offerte_massime"][squadra] = nuova_offerta_max
-    leader_attuale = asta_attiva["squadra_leader"]
-    max_leader = asta_attiva["offerte_massime"].get(leader_attuale, 1)
+    asta["offerte_massime"][squadra] = nuova_offerta_max
+    leader_attuale = asta["squadra_leader"]
+    max_leader = asta["offerte_massime"].get(leader_attuale, 1)
 
     if squadra == leader_attuale:
-        asta_attiva["scadenza"] = datetime.now() + timedelta(hours=24)
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"📈 {squadra} ha aggiornato la propria offerta massima per {giocatore}. Timer 24h rinnovato!")
+        asta["scadenza"] = datetime.now() + timedelta(hours=24)
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"📈 {squadra} ha aggiornato la propria offerta massima per **{giocatore_display}**. Timer 24h rinnovato!")
         return
 
     if nuova_offerta_max > max_leader:
@@ -476,14 +479,14 @@ async def rilancia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if nuova_offerta_corrente > nuova_offerta_max:
             nuova_offerta_corrente = nuova_offerta_max
 
-        asta_attiva["squadra_leader"] = squadra
-        asta_attiva["offerta_corrente"] = nuova_offerta_corrente
-        asta_attiva["scadenza"] = datetime.now() + timedelta(hours=24)
+        asta["squadra_leader"] = squadra
+        asta["offerta_corrente"] = nuova_offerta_corrente
+        asta["scadenza"] = datetime.now() + timedelta(hours=24)
 
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=f"🔥 **RILANCIO AUTOMATICO!**\n"
-                 f"⚽ Giocatore: {giocatore}\n"
+                 f"⚽ Giocatore: **{giocatore_display}**\n"
                  f"🛡️ Nuova squadra in testa: **{squadra}**\n"
                  f"💰 Offerta corrente visibile: **{nuova_offerta_corrente}** crediti\n"
                  f"⏱️ Timer 24h azzerato e fatto ripartire!"
@@ -493,31 +496,35 @@ async def rilancia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if nuova_offerta_corrente > max_leader:
             nuova_offerta_corrente = max_leader
 
-        asta_attiva["offerta_corrente"] = nuova_offerta_corrente
-        asta_attiva["scadenza"] = datetime.now() + timedelta(hours=24)
+        asta["offerta_corrente"] = nuova_offerta_corrente
+        asta["scadenza"] = datetime.now() + timedelta(hours=24)
 
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=f"🤖 **RILANCIO AUTOMATICO DEL SISTEMA!**\n"
-                 f"Per {giocatore}, la squadra **{leader_attuale}** copre il rilancio.\n"
+                 f"Per **{giocatore_display}**, la squadra **{leader_attuale}** copre il rilancio.\n"
                  f"💰 Nuova offerta corrente visibile: **{nuova_offerta_corrente}** crediti\n"
                  f"⏱️ Timer 24h rinnovato!"
         )
 
 async def stato_asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if asta_attiva["giocatore"] is None:
+    if not aste_attive:
         await update.message.reply_text("Nessuna asta in corso.")
         return
-    rimanente = asta_attiva["scadenza"] - datetime.now()
-    ore = int(rimanente.total_seconds() // 3600)
-    minuti = int((rimanente.total_seconds() % 3600) // 60)
-    await update.message.reply_text(
-        f"📊 **STATO ASTA**\n"
-        f"⚽ Giocatore: {asta_attiva['giocatore']}\n"
-        f"💰 Prezzo visibile: {asta_attiva['offerta_corrente']} crediti\n"
-        f"🛡️ In testa: {asta_attiva['squadra_leader']}\n"
-        f"⏳ Tempo residuo: ~{ore}h {minuti}m"
-    )
+
+    testo = "📊 **ASTE ATTIVE IN CORSO**\n\n"
+    for info in aste_attive.values():
+        rimanente = info["scadenza"] - datetime.now()
+        ore = int(rimanente.total_seconds() // 3600)
+        minuti = int((rimanente.total_seconds() % 3600) // 60)
+        testo += (
+            f"⚽ **{info['giocatore_display']}**\n"
+            f"💰 Prezzo visibile: {info['offerta_corrente']} crediti\n"
+            f"🛡️ In testa: {info['squadra_leader']}\n"
+            f"⏳ Tempo residuo: ~{ore}h {minuti}m\n"
+            f"-----------------------------------\n"
+        )
+    await update.message.reply_text(testo, parse_mode="Markdown")
 
 # --- GESTIONE INTERATTIVA /ROSA (Pulsanti Squadre) ---
 async def rosa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -616,15 +623,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             title = f"📋 **GIOCATORI LIBERI**" + (f" ({ruolo_cercato})" if ruolo_cercato else "")
             
-            # Dividiamo la lista in blocchi di massimo 40 elementi per non superare i limiti di Telegram
             chunk_size = 40
             chunks = [liberi[i:i + chunk_size] for i in range(0, len(liberi), chunk_size)]
             
-            # Inviamo il primo blocco modificando la risposta al pulsante
             prima_parte = f"{title} (Totale: {len(liberi)})\n" + "\n".join(chunks[0])
             await query.edit_message_text(prima_parte, parse_mode="Markdown")
             
-            # Inviamo eventuali blocchi successivi come nuovi messaggi di seguito
             chat_id = query.message.chat_id
             for chunk in chunks[1:]:
                 testo_chunk = "\n".join(chunk)
@@ -643,19 +647,33 @@ async def mercato_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(testo, parse_mode="Markdown")
 
 async def annulla_asta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global asta_attiva
+    global aste_attive
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("Non autorizzato.")
         return
     
-    if asta_attiva["giocatore"] is None:
+    if not aste_attive:
         await update.message.reply_text("⚠️ Nessuna asta attiva da annullare.")
         return
 
-    giocatore_annullato = asta_attiva["giocatore"]
-    asta_attiva = {"giocatore": None, "offerta_corrente": 1, "squadra_leader": None, "offerte_massime": {}, "scadenza": None}
-    
-    await update.message.reply_text(f"❌ L'asta in corso per **{giocatore_annullato}** è stata annullata dall'amministratore.", parse_mode="Markdown")
+    args = context.args
+    if not args:
+        if len(aste_attive) == 1:
+            giocatore_key = list(aste_attive.keys())[0]
+            nome_display = aste_attive[giocatore_key]["giocatore_display"]
+            aste_attive.pop(giocatore_key)
+            await update.message.reply_text(f"❌ L'asta in corso per **{nome_display}** è stata annullata dall'amministratore.", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("⚠️ Ci sono più aste attive. Specifica quale annullare: `/annulla_asta [Nome Giocatore]`", parse_mode="Markdown")
+        return
+
+    giocatore_richiesto = " ".join(args).strip().lower()
+    if giocatore_richiesto in aste_attive:
+        nome_display = aste_attive[giocatore_richiesto]["giocatore_display"]
+        aste_attive.pop(giocatore_richiesto)
+        await update.message.reply_text(f"❌ L'asta per **{nome_display}** è stata annullata dall'amministratore.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ Nessuna asta attiva trovata per '{' '.join(args)}'.")
 
 async def blocca_merc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -690,7 +708,7 @@ def main():
     app.add_handler(CommandHandler("sblocca_merc", sblocca_merc_command))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    app.job_queue.run_repeating(controlla_scadenza_asta, interval=30, first=10)
+    app.job_queue.run_repeating(controlla_scadenza_aste, interval=30, first=10)
     app.run_polling()
 
 if __name__ == "__main__":
